@@ -9,6 +9,8 @@ import com.termux.api.services.AutoClickAccessibilityService;
 
 public class AutoClickAPI {
 
+    private static final String LOG_TAG = "AutoClickAPI";
+
     public static void onReceive(TermuxApiReceiver receiver,
                                  Context context,
                                  Intent intent) {
@@ -16,11 +18,13 @@ public class AutoClickAPI {
         int x = intent.getIntExtra("x", 500);
         int y = intent.getIntExtra("y", 800);
 
+        Log.d(LOG_TAG,"Click request: "+x+" "+y);
+
         AutoClickAccessibilityService service =
                 AutoClickAccessibilityService.getInstance();
 
         if(service == null){
-            Log.e("AutoClickAPI","Accessibility service not ready");
+            Log.e(LOG_TAG,"Accessibility service not ready");
             return;
         }
 
