@@ -88,6 +88,9 @@ public class TermuxApiReceiver extends BroadcastReceiver {
             case "AudioInfo":
                 AudioAPI.onReceive(this, context, intent);
                 break;
+            case "AutoClick":
+                AutoClickAPI.onReceive(this, context, intent);
+                break;
             case "BatteryStatus":
                 BatteryStatusAPI.onReceive(this, context, intent);
                 break;
