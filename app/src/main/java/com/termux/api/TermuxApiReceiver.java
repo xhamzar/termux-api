@@ -9,7 +9,7 @@ import android.provider.Settings;
 import android.widget.Toast;
 
 import com.termux.api.apis.AudioAPI;
-import com.termux.api.apis.AutoClickApi;
+import com.termux.api.apis.AutoClickAPI;
 import com.termux.api.apis.BatteryStatusAPI;
 import com.termux.api.apis.BrightnessAPI;
 import com.termux.api.apis.CallLogAPI;
