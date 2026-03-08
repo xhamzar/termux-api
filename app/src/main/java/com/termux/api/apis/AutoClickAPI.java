@@ -15,10 +15,10 @@ public class AutoClickAPI {
                                  Context context,
                                  Intent intent) {
 
-        int x = intent.getIntExtra("x", 500);
-        int y = intent.getIntExtra("y", 800);
+        int x = intent.getIntExtra("x",500);
+        int y = intent.getIntExtra("y",900);
 
-        Log.d(LOG_TAG,"Click request: "+x+" "+y);
+        Log.d(LOG_TAG,"Click request "+x+" "+y);
 
         AutoClickAccessibilityService service =
                 AutoClickAccessibilityService.getInstance();
