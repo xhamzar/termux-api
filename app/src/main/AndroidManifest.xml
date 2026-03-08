@@ -82,9 +82,14 @@
         <!-- Receiver -->
 
         <receiver
-            android:name=".TermuxApiReceiver"
-            android:exported="false"/>
+    android:name=".TermuxApiReceiver"
+    android:exported="true">
+    
+    <intent-filter>
+        <action android:name="com.termux.api"/>
+    </intent-filter>
 
+</receiver>
         <!-- Accessibility service for AutoClick -->
 
 <service
