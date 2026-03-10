@@ -15,22 +15,38 @@ public class AutoClickAPI {
                                  Context context,
                                  Intent intent) {
 
-        // Mengambil koordinat X, Y, dan Durasi (default durasi 100ms)
-        int x = intent.getIntExtra("x", 500);
-        int y = intent.getIntExtra("y", 900);
-        int duration = intent.getIntExtra("duration", 100); 
-
-        Log.d(LOG_TAG, "Request diterima: X=" + x + " Y=" + y + " Durasi=" + duration + "ms");
-
-        AutoClickAccessibilityService service =
+        AutoClickAccessibilityService service = 
                 AutoClickAccessibilityService.getInstance();
 
         if (service == null) {
-            Log.e(LOG_TAG, "Accessibility service belum aktif di Pengaturan HP!");
+            Log.e(LOG_TAG, "Accessibility service belum aktif!");
             return;
         }
 
-        // Memanggil fungsi klik dengan durasi kustom
-        service.click(x, y, duration);
+        // Ambil 'method' dari intent, defaultnya adalah CLICK
+        String method = intent.getStringExtra("method");
+        if (method == null) method = "CLICK";
+
+        if ("CLICK".equals(method)) {
+            int x = intent.getIntExtra("x", 500);
+            int y = intent.getIntExtra("y", 900);
+            int duration = intent.getIntExtra("duration", 100);
+            
+            // PERBAIKAN: Ganti service.click menjadi service.performGesture
+            // Kita masukkan koordinat yang sama (x,y) ke (x,y) agar menjadi klik titik
+            service.performGesture(x, y, x, y, duration);
+
+        } else if ("SWIPE".equals(method)) {
+            int x1 = intent.getIntExtra("x1", 0);
+            int y1 = intent.getIntExtra("y1", 0);
+            int x2 = intent.getIntExtra("x2", 0);
+            int y2 = intent.getIntExtra("y2", 0);
+            int duration = intent.getIntExtra("duration", 500);
+            service.performGesture(x1, y1, x2, y2, duration);
+
+        } else if ("CLICK_TEXT".equals(method)) {
+            String text = intent.getStringExtra("text");
+            if (text != null) service.clickText(text);
+        }
     }
 }
