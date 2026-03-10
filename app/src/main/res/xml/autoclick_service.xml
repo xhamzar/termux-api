@@ -6,4 +6,4 @@
     android:canPerformGestures="true"
     android:notificationTimeout="100"
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
-    android:description="@string/autoclick_description" />
+    android:description="Layanan Aksesibilitas untuk Auto Click Termux" />
