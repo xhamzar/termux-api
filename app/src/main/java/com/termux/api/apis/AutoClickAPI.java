@@ -15,19 +15,22 @@ public class AutoClickAPI {
                                  Context context,
                                  Intent intent) {
 
-        int x = intent.getIntExtra("x",500);
-        int y = intent.getIntExtra("y",900);
+        // Mengambil koordinat X, Y, dan Durasi (default durasi 100ms)
+        int x = intent.getIntExtra("x", 500);
+        int y = intent.getIntExtra("y", 900);
+        int duration = intent.getIntExtra("duration", 100); 
 
-        Log.d(LOG_TAG,"Click request "+x+" "+y);
+        Log.d(LOG_TAG, "Request diterima: X=" + x + " Y=" + y + " Durasi=" + duration + "ms");
 
         AutoClickAccessibilityService service =
                 AutoClickAccessibilityService.getInstance();
 
-        if(service == null){
-            Log.e(LOG_TAG,"Accessibility service not ready");
+        if (service == null) {
+            Log.e(LOG_TAG, "Accessibility service belum aktif di Pengaturan HP!");
             return;
         }
 
-        service.click(x,y);
+        // Memanggil fungsi klik dengan durasi kustom
+        service.click(x, y, duration);
     }
 }
