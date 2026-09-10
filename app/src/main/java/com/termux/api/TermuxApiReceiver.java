@@ -51,6 +51,8 @@ import com.termux.shared.data.IntentUtils;
 import com.termux.shared.logger.Logger;
 import com.termux.shared.termux.TermuxConstants;
 import com.termux.shared.termux.plugins.TermuxPluginUtils;
+import com.termux.api.apis.TouchAPI;
+
 
 public class TermuxApiReceiver extends BroadcastReceiver {
 
@@ -101,6 +103,10 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                     return;
                 }
                 BrightnessAPI.onReceive(this, context, intent);
+                break;
+            // Dalam switch statement, tambahkan:
+               case "Touch":
+                    TouchAPI.onReceive(this, context, intent);
                 break;
             case "CameraInfo":
                 CameraInfoAPI.onReceive(this, context, intent);
