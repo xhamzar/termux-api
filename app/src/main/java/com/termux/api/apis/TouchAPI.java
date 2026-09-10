@@ -45,9 +45,12 @@ public class TouchAPI {
     public static void onReceive(TermuxApiReceiver apiReceiver, final Context context, final Intent intent) {
         Logger.logDebug(LOG_TAG, "onReceive");
 
-        String action = intent.getStringExtra("action");
-        if (action == null || action.isEmpty()) {
+        final String action;
+        String intentAction = intent.getStringExtra("action");
+        if (intentAction == null || intentAction.isEmpty()) {
             action = "tap"; // default action
+        } else {
+            action = intentAction;
         }
 
         ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultJsonWriter() {
