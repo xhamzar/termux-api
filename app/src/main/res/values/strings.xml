@@ -14,6 +14,17 @@
     <string name="overlay_default_text">Termux:API overlay</string>
     <string name="overlay_content_description">Movable Termux:API floating overlay</string>
     <string name="overlay_drag_hint">Tap or drag to move</string>
+    <string name="overlay_progress_description">Overlay progress</string>
+    <string name="overlay_button_status">Button: %1$s</string>
+    <string name="overlay_media_description">Overlay media content</string>
+    <string name="overlay_image_description">Image displayed in the overlay</string>
+    <string name="overlay_image_ready">Image ready</string>
+    <string name="overlay_image_error">Unable to decode image</string>
+    <string name="overlay_web_ready">Web page ready</string>
+    <string name="overlay_web_error">Unable to load web page</string>
+    <string name="overlay_video_description">Video displayed in the overlay</string>
+    <string name="overlay_video_ready">Video ready</string>
+    <string name="overlay_video_error">Unable to play video</string>
     <plurals name="overlay_tap_status">
         <item quantity="one">Tapped %1$d time</item>
         <item quantity="other">Tapped %1$d times</item>

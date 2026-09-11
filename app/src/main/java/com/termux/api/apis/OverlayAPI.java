@@ -13,7 +13,16 @@ import com.termux.api.TermuxApiReceiver;
 import com.termux.api.util.ResultReturner;
 import com.termux.shared.logger.Logger;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -25,6 +34,11 @@ public class OverlayAPI {
     private static final long COMMAND_TIMEOUT_MILLIS = 5_000;
     private static final int MAX_TEXT_LENGTH = 4_096;
     private static final int MAX_DIMENSION = 10_000;
+    private static final int MAX_BUTTONS = 8;
+    private static final int MAX_BUTTON_ID_LENGTH = 64;
+    private static final int MAX_BUTTON_LABEL_LENGTH = 48;
+    private static final int MAX_SOURCE_LENGTH = 4_096;
+    private static final long MAX_IMAGE_FILE_BYTES = 25L * 1024 * 1024;
 
     public static void onReceive(TermuxApiReceiver receiver, Context context, Intent intent) {
         Logger.logDebug(LOG_TAG, "onReceive");
@@ -59,6 +73,17 @@ public class OverlayAPI {
             case OverlayService.ACTION_STATUS:
                 writeResult(out, true, null, OverlayService.getSnapshot(), context);
                 return;
+            case OverlayService.ACTION_EVENTS:
+                boolean clear = getOptionalBooleanExtra(source, "clear", true);
+                List<OverlayService.OverlayEvent> events = OverlayService.getEvents(clear);
+                writeResult(out, true, null, OverlayService.getSnapshot(), context);
+                writeEvents(out, events);
+                return;
+            case OverlayService.ACTION_CLEAR_EVENTS:
+            case "clear-events":
+                OverlayService.clearEvents();
+                writeResult(out, true, null, OverlayService.getSnapshot(), context);
+                return;
             case "permission":
                 openOverlayPermissionSettings(context);
                 writeResult(out, true, null, OverlayService.getSnapshot(), context);
@@ -67,6 +92,31 @@ public class OverlayAPI {
             case OverlayService.ACTION_SHOW:
                 requireOverlayPermission(context);
                 validateOptionalParameters(source);
+                break;
+            case OverlayService.ACTION_UPDATE:
+                requireRunningService();
+                validateOptionalParameters(source);
+                break;
+            case OverlayService.ACTION_CONTENT:
+                requireRunningService();
+                validateContent(source);
+                break;
+            case OverlayService.ACTION_CLEAR_CONTENT:
+            case "clear-content":
+            case OverlayService.ACTION_PLAY:
+            case OverlayService.ACTION_PAUSE:
+                requireRunningService();
+                break;
+            case OverlayService.ACTION_SEEK:
+                requireRunningService();
+                requireNonNegativeInteger(source, "position_ms");
+                break;
+            case OverlayService.ACTION_VOLUME:
+                requireRunningService();
+                int volume = getIntExtra(source, "volume");
+                if (volume < 0 || volume > 100) {
+                    throw new OverlayApiException("'volume' must be between 0 and 100");
+                }
                 break;
             case OverlayService.ACTION_MOVE:
                 requireRunningService();
@@ -116,6 +166,15 @@ public class OverlayAPI {
         copyExtra(source, serviceIntent, "y");
         copyExtra(source, serviceIntent, "width");
         copyExtra(source, serviceIntent, "height");
+        copyExtra(source, serviceIntent, "progress");
+        copyExtra(source, serviceIntent, "buttons");
+        copyExtra(source, serviceIntent, "type");
+        copyExtra(source, serviceIntent, "source");
+        copyExtra(source, serviceIntent, "javascript");
+        copyExtra(source, serviceIntent, "autoplay");
+        copyExtra(source, serviceIntent, "focusable");
+        copyExtra(source, serviceIntent, "position_ms");
+        copyExtra(source, serviceIntent, "volume");
 
         try {
             if (!OverlayService.isRunning() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -145,6 +204,7 @@ public class OverlayAPI {
         Object value = extras.get(name);
         if (value instanceof String) target.putExtra(name, (String) value);
         else if (value instanceof Integer) target.putExtra(name, (Integer) value);
+        else if (value instanceof Boolean) target.putExtra(name, (Boolean) value);
     }
 
     private static void validateOptionalParameters(Intent intent) throws OverlayApiException {
@@ -156,6 +216,9 @@ public class OverlayAPI {
         validateOptionalCoordinate(intent, "y");
         validateOptionalDimension(intent, "width");
         validateOptionalDimension(intent, "height");
+        validateOptionalProgress(intent);
+        validateOptionalButtons(intent);
+        validateOptionalBoolean(intent, "focusable");
     }
 
     private static void validateOptionalCoordinate(Intent intent, String name)
@@ -188,6 +251,147 @@ public class OverlayAPI {
             throw new OverlayApiException("Missing or invalid integer '" + name + "' parameter");
         }
         return extras.getInt(name);
+    }
+
+    private static boolean getOptionalBooleanExtra(Intent intent, String name, boolean defaultValue)
+            throws OverlayApiException {
+        Bundle extras = intent.getExtras();
+        if (extras == null || !extras.containsKey(name)) return defaultValue;
+        if (!(extras.get(name) instanceof Boolean)) {
+            throw new OverlayApiException("'" + name + "' must be a boolean");
+        }
+        return extras.getBoolean(name);
+    }
+
+    private static void validateOptionalBoolean(Intent intent, String name)
+            throws OverlayApiException {
+        getOptionalBooleanExtra(intent, name, false);
+    }
+
+    private static void validateContent(Intent intent) throws OverlayApiException {
+        validateOptionalParameters(intent);
+        String type = requireStringExtra(intent, "type").trim().toLowerCase(Locale.ROOT);
+        String source = requireStringExtra(intent, "source").trim();
+        if (source.length() > MAX_SOURCE_LENGTH) {
+            throw new OverlayApiException("'source' must not exceed 4096 characters");
+        }
+        validateOptionalBoolean(intent, "javascript");
+        validateOptionalBoolean(intent, "autoplay");
+        validateOptionalBoolean(intent, "focusable");
+
+        switch (type) {
+            case "image":
+                intent.putExtra("source", validateLocalFile(source, true));
+                break;
+            case "web":
+                requireHttpsUrl(source, "Web content");
+                break;
+            case "video":
+                if (isHttpsUrl(source)) {
+                    requireHttpsUrl(source, "Remote video");
+                } else {
+                    intent.putExtra("source", validateLocalFile(source, false));
+                }
+                break;
+            default:
+                throw new OverlayApiException("'type' must be image, web, or video");
+        }
+        intent.putExtra("type", type);
+    }
+
+    private static String requireStringExtra(Intent intent, String name)
+            throws OverlayApiException {
+        Bundle extras = intent.getExtras();
+        if (extras == null || !(extras.get(name) instanceof String)) {
+            throw new OverlayApiException("Missing or invalid string '" + name + "' parameter");
+        }
+        String value = extras.getString(name, "");
+        if (value.trim().isEmpty()) {
+            throw new OverlayApiException("'" + name + "' must not be empty");
+        }
+        return value;
+    }
+
+    private static String validateLocalFile(String path, boolean enforceImageLimit)
+            throws OverlayApiException {
+        if (!new File(path).isAbsolute()) {
+            throw new OverlayApiException("Local media source must use an absolute path");
+        }
+        File file;
+        try {
+            file = new File(path).getCanonicalFile();
+        } catch (IOException e) {
+            throw new OverlayApiException("Invalid local file path");
+        }
+        if (!file.isAbsolute() || !file.isFile() || !file.canRead()) {
+            throw new OverlayApiException("Local media source must be an absolute, readable file");
+        }
+        if (enforceImageLimit && file.length() > MAX_IMAGE_FILE_BYTES) {
+            throw new OverlayApiException("Image file must not exceed 25 MiB");
+        }
+        return file.getAbsolutePath();
+    }
+
+    private static boolean isHttpsUrl(String source) {
+        return "https".equalsIgnoreCase(Uri.parse(source).getScheme());
+    }
+
+    private static void requireHttpsUrl(String source, String label) throws OverlayApiException {
+        Uri uri = Uri.parse(source);
+        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null ||
+                uri.getHost().trim().isEmpty() || uri.getUserInfo() != null) {
+            throw new OverlayApiException(label + " source must be a valid HTTPS URL");
+        }
+    }
+
+    private static int requireNonNegativeInteger(Intent intent, String name)
+            throws OverlayApiException {
+        int value = getIntExtra(intent, name);
+        if (value < 0) throw new OverlayApiException("'" + name + "' must be zero or greater");
+        return value;
+    }
+
+    private static void validateOptionalProgress(Intent intent) throws OverlayApiException {
+        if (!intent.hasExtra("progress")) return;
+        int progress = getIntExtra(intent, "progress");
+        if (progress < -1 || progress > 100) {
+            throw new OverlayApiException("'progress' must be -1 (hidden) or between 0 and 100");
+        }
+    }
+
+    private static void validateOptionalButtons(Intent intent) throws OverlayApiException {
+        if (!intent.hasExtra("buttons")) return;
+        String buttons = intent.getStringExtra("buttons");
+        if (buttons == null) throw new OverlayApiException("'buttons' must be a JSON string");
+        try {
+            JSONArray array = new JSONArray(buttons);
+            if (array.length() > MAX_BUTTONS) {
+                throw new OverlayApiException("'buttons' must contain at most 8 buttons");
+            }
+            Set<String> ids = new HashSet<>();
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject button = array.getJSONObject(i);
+                if (!(button.opt("id") instanceof String) ||
+                        !(button.opt("label") instanceof String)) {
+                    throw new OverlayApiException(
+                        "Button 'id' and 'label' must be strings at index " + i);
+                }
+                String id = button.optString("id", "").trim();
+                String label = button.optString("label", "").trim();
+                if (id.isEmpty() || id.length() > MAX_BUTTON_ID_LENGTH) {
+                    throw new OverlayApiException(
+                        "Button 'id' must contain between 1 and 64 characters at index " + i);
+                }
+                if (label.isEmpty() || label.length() > MAX_BUTTON_LABEL_LENGTH) {
+                    throw new OverlayApiException(
+                        "Button 'label' must contain between 1 and 48 characters at index " + i);
+                }
+                if (!ids.add(id)) throw new OverlayApiException("Duplicate button id: " + id);
+            }
+        } catch (JSONException e) {
+            throw new OverlayApiException(
+                "'buttons' must be a JSON array of {\"id\",\"label\"} objects");
+        }
     }
 
     private static void requireRunningService() throws OverlayApiException {
@@ -230,6 +434,32 @@ public class OverlayAPI {
         out.name("width").value(snapshot.width);
         out.name("height").value(snapshot.height);
         out.name("tap_count").value(snapshot.tapCount);
+        out.name("progress").value(snapshot.progress);
+        out.name("button_count").value(snapshot.buttonCount);
+        out.name("event_count").value(snapshot.eventCount);
+        out.name("content_type").value(snapshot.contentType);
+        out.name("content_source").value(snapshot.contentSource);
+        out.name("playback_state").value(snapshot.playbackState);
+        out.name("position_ms").value(snapshot.positionMs);
+        out.name("duration_ms").value(snapshot.durationMs);
+        out.name("volume").value(snapshot.volume);
+        out.name("javascript_enabled").value(snapshot.javascriptEnabled);
+        out.name("focusable").value(snapshot.focusable);
+    }
+
+    private static void writeEvents(JsonWriter out, List<OverlayService.OverlayEvent> events)
+            throws Exception {
+        out.name("events").beginArray();
+        for (OverlayService.OverlayEvent event : events) {
+            out.beginObject();
+            out.name("type").value(event.type);
+            out.name("id").value(event.id);
+            out.name("timestamp").value(event.timestamp);
+            out.name("x").value(event.x);
+            out.name("y").value(event.y);
+            out.endObject();
+        }
+        out.endArray();
     }
 
     private static class OverlayApiException extends Exception {

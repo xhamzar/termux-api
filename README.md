@@ -66,13 +66,48 @@ OVERLAY_API="$PREFIX/libexec/termux-api"
 "$OVERLAY_API" Overlay --es action move --ei x 40 --ei y 200
 "$OVERLAY_API" Overlay --es action resize --ei width 700 --ei height 240
 
+# Build an interactive panel with progress and application-defined buttons.
+"$OVERLAY_API" Overlay --es action update --es text "Deploying" --ei progress 35 \
+  --es buttons '[{"id":"cancel","label":"Cancel"},{"id":"details","label":"Details"}]'
+
+# Read queued tap/button/move events. Events are removed after reading by default.
+"$OVERLAY_API" Overlay --es action events
+"$OVERLAY_API" Overlay --es action events --ez clear false
+"$OVERLAY_API" Overlay --es action clear_events
+
+# Display a local image. Use an absolute path visible to Termux:API.
+"$OVERLAY_API" Overlay --es action content --es type image \
+  --es source "$HOME/storage/shared/Pictures/status.png"
+
+# Display an HTTPS page. JavaScript is disabled unless explicitly enabled.
+"$OVERLAY_API" Overlay --es action content --es type web \
+  --es source "https://example.com/dashboard"
+"$OVERLAY_API" Overlay --es action content --es type web \
+  --es source "https://example.com/app" --ez javascript true --ez focusable true
+
+# Play a local file or HTTPS video and control it from Termux.
+"$OVERLAY_API" Overlay --es action content --es type video \
+  --es source "$HOME/storage/shared/Movies/demo.mp4" --ez autoplay true
+"$OVERLAY_API" Overlay --es action pause
+"$OVERLAY_API" Overlay --es action seek --ei position_ms 30000
+"$OVERLAY_API" Overlay --es action volume --ei volume 50
+"$OVERLAY_API" Overlay --es action play
+"$OVERLAY_API" Overlay --es action clear_content
+
 # Hide keeps the explicitly started service available; stop removes the view and service.
 "$OVERLAY_API" Overlay --es action hide
 "$OVERLAY_API" Overlay --es action stop
 ```
 
 The service is internal to the app, runs in the foreground only after `start` or `show`, and is not
-restarted automatically after it is stopped or killed.
+restarted automatically after it is stopped or killed. Button definitions are limited to 8 entries,
+and the in-memory event queue retains the latest 100 events. Set `progress` to `-1` and `buttons` to
+`[]` to hide those controls. Image sources are limited to readable local files of at most 25 MiB;
+large images are downsampled before display. Video accepts readable local files or HTTPS URLs. Web
+content only accepts HTTPS, cannot access local files or `content://` providers, and has JavaScript
+disabled by default. Enable `focusable` only when a web form needs keyboard input because a focusable
+overlay temporarily receives input focus instead of the app underneath it. Media and WebView resources
+are released by `clear_content`, when another content item replaces them, and by `stop`.
 
 ## Ideas
 
