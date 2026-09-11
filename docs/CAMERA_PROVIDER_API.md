@@ -274,3 +274,20 @@ On recent Android versions, camera access is subject to foreground-service and w
 rules. Start the provider while Termux/Termux:API is allowed to access the camera. The ongoing
 notification keeps a successfully started stream or recording visible, but Android may still stop
 it for privacy, battery, or process-management reasons.
+
+## Live controls and Overlay/AI clients
+
+Change supported controls while the provider is active:
+
+```sh
+termux-camera control --zoom 2.0 --autofocus continuous
+termux-camera control --flash torch --exposure -1
+termux-camera control --camera 1 --width 1280 --height 720 --fps 30
+```
+
+Zoom, autofocus, torch, and exposure are updated without restarting capture. Camera, resolution, and
+FPS changes restart persistent stream backends so reconnecting clients can continue. Restart controls
+are rejected for stdout pipe streams and recordings; stop and start those modes explicitly.
+
+For floating preview, bounding boxes, the reconnecting Python/OpenCV reader, and reference AI
+adapters, see [Camera, Overlay, OpenCV, and AI Vision](CAMERA_OVERLAY_VISION.md).

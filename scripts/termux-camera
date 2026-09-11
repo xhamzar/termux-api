@@ -12,6 +12,7 @@ Usage:
   termux-camera photo [options]
   termux-camera record [options]
   termux-camera stream [options]
+  termux-camera control [options]
   termux-camera status
   termux-camera stop
 
@@ -33,12 +34,19 @@ Output options:
   --quality 1..100     JPEG quality (default: 85)
   --bitrate BPS        H.264 recording bitrate (default: 8000000)
 
+Live controls:
+  --zoom RATIO         Digital zoom, for example 2 or 2.5
+  --autofocus MODE     continuous, auto, or off
+  --flash MODE         off or torch
+  --exposure STEPS     Camera exposure-compensation index
+
 Examples:
   termux-camera photo
   termux-camera record --file ~/camera/video.mp4
   termux-camera stream --camera 0 --fps 30 --format jpeg | program
   termux-camera stream --output tcp --protocol mjpeg --port 9000
   termux-camera stream --socket ~/camera.sock --protocol framed
+  termux-camera control --zoom 2 --autofocus continuous --flash off
 EOF
 }
 
@@ -74,11 +82,18 @@ stop_proxy() {
 command=$1
 shift
 
+case "$command" in
+    -h|--help) usage; exit 0 ;;
+esac
+
 camera=0
 camera_set=false
 width=1280
+width_set=false
 height=720
+height_set=false
 fps=30
+fps_set=false
 format=jpeg
 file=
 output=pipe
@@ -91,19 +106,23 @@ protocol=framed
 protocol_set=false
 quality=85
 bitrate=8000000
+zoom=
+autofocus=
+flash=
+exposure=
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --camera|--width|--height|--fps|--format|--file|--output|--directory|--port|--socket-name|--socket|--protocol|--quality|--bitrate)
+        --camera|--width|--height|--fps|--format|--file|--output|--directory|--port|--socket-name|--socket|--protocol|--quality|--bitrate|--zoom|--autofocus|--flash|--exposure)
             [ "$#" -ge 2 ] || fail "missing value for $1"
             option=$1
             value=$2
             shift 2
             case "$option" in
                 --camera) camera=$value; camera_set=true ;;
-                --width) width=$value ;;
-                --height) height=$value ;;
-                --fps) fps=$value ;;
+                --width) width=$value; width_set=true ;;
+                --height) height=$value; height_set=true ;;
+                --fps) fps=$value; fps_set=true ;;
                 --format) format=$value ;;
                 --file) file=$value ;;
                 --output) output=$value; output_set=true ;;
@@ -114,6 +133,10 @@ while [ "$#" -gt 0 ]; do
                 --protocol) protocol=$value; protocol_set=true ;;
                 --quality) quality=$value ;;
                 --bitrate) bitrate=$value ;;
+                --zoom) zoom=$value ;;
+                --autofocus) autofocus=$value ;;
+                --flash) flash=$value ;;
+                --exposure) exposure=$value ;;
             esac
             ;;
         -h|--help) usage; exit 0 ;;
@@ -192,6 +215,18 @@ case "$command" in
             printf '%s\n%s\n' "$proxy_pid" "$socket_path" > "$PROXY_STATE"
             echo "$SCRIPT_NAME: Unix socket proxy listening at $socket_path" >&2
         fi
+        ;;
+    control)
+        set -- "$API_HELPER" Camera --es action control
+        if [ "$camera_set" = true ]; then set -- "$@" --es camera "$camera"; fi
+        if [ "$width_set" = true ]; then set -- "$@" --ei width "$width"; fi
+        if [ "$height_set" = true ]; then set -- "$@" --ei height "$height"; fi
+        if [ "$fps_set" = true ]; then set -- "$@" --ei fps "$fps"; fi
+        if [ -n "$zoom" ]; then set -- "$@" --ef zoom "$zoom"; fi
+        if [ -n "$autofocus" ]; then set -- "$@" --es autofocus "$autofocus"; fi
+        if [ -n "$flash" ]; then set -- "$@" --es flash "$flash"; fi
+        if [ -n "$exposure" ]; then set -- "$@" --ei exposure "$exposure"; fi
+        exec "$@"
         ;;
     status)
         exec "$API_HELPER" Camera --es action status

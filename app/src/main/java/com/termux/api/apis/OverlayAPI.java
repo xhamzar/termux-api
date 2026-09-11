@@ -1,7 +1,9 @@
 package com.termux.api.apis;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -38,6 +40,7 @@ public class OverlayAPI {
     private static final int MAX_BUTTON_ID_LENGTH = 64;
     private static final int MAX_BUTTON_LABEL_LENGTH = 48;
     private static final int MAX_SOURCE_LENGTH = 4_096;
+    private static final int MAX_DRAW_TEXT_LENGTH = 256;
     private static final long MAX_IMAGE_FILE_BYTES = 25L * 1024 * 1024;
     private static final String[] COLOR_PARAMETERS = {
         "background_color", "text_color", "status_color", "border_color", "button_color",
@@ -75,6 +78,9 @@ public class OverlayAPI {
 
         switch (action) {
             case OverlayService.ACTION_STATUS:
+                writeResult(out, true, null, OverlayService.getSnapshot(), context);
+                return;
+            case OverlayService.ACTION_CAMERA_STATUS:
                 writeResult(out, true, null, OverlayService.getSnapshot(), context);
                 return;
             case OverlayService.ACTION_EVENTS:
@@ -129,6 +135,38 @@ public class OverlayAPI {
                 if (volume < 0 || volume > 100) {
                     throw new OverlayApiException("'volume' must be between 0 and 100");
                 }
+                break;
+            case OverlayService.ACTION_CAMERA_START:
+                requireOverlayPermission(context);
+                validateOptionalParameters(source);
+                validateSocketName(source);
+                break;
+            case OverlayService.ACTION_CAMERA_STOP:
+                if (!OverlayService.getCameraSnapshot().running) {
+                    writeResult(out, true, null, OverlayService.getSnapshot(), context);
+                    return;
+                }
+                break;
+            case OverlayService.ACTION_CAMERA_RESIZE:
+                requireCameraOverlay();
+                requireDimension(source, "width");
+                requireDimension(source, "height");
+                break;
+            case OverlayService.ACTION_CAMERA_POSITION:
+                requireCameraOverlay();
+                requireCoordinate(source, "x");
+                requireCoordinate(source, "y");
+                break;
+            case OverlayService.ACTION_DRAW_TEXT:
+                requireCameraOverlay();
+                validateDrawText(source);
+                break;
+            case OverlayService.ACTION_DRAW_BOX:
+                requireCameraOverlay();
+                validateDrawBox(source);
+                break;
+            case OverlayService.ACTION_DRAW_CLEAR:
+                requireCameraOverlay();
                 break;
             case OverlayService.ACTION_MOVE:
                 requireRunningService();
@@ -204,6 +242,11 @@ public class OverlayAPI {
         copyExtra(source, serviceIntent, "draggable");
         copyExtra(source, serviceIntent, "touchable");
         copyExtra(source, serviceIntent, "show_status");
+        copyExtra(source, serviceIntent, "socket_name");
+        copyExtra(source, serviceIntent, "label");
+        copyExtra(source, serviceIntent, "confidence");
+        copyExtra(source, serviceIntent, "color");
+        copyExtra(source, serviceIntent, "stroke_width");
 
         try {
             if (!OverlayService.isRunning() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -280,6 +323,57 @@ public class OverlayAPI {
                 getOptionalBooleanExtra(intent, "focusable", false)) {
             throw new OverlayApiException("'focusable' cannot be true when 'touchable' is false");
         }
+    }
+
+    private static void validateSocketName(Intent intent) throws OverlayApiException {
+        String name = intent.hasExtra("socket_name")
+            ? requireStringExtra(intent, "socket_name").trim() : "termux.camera.frames";
+        if (name.length() > 90 || name.contains("/")) {
+            throw new OverlayApiException(
+                "'socket_name' must be an abstract Unix socket name without '/'");
+        }
+        intent.putExtra("socket_name", name);
+    }
+
+    private static void validateDrawText(Intent intent) throws OverlayApiException {
+        String text = requireStringExtra(intent, "text");
+        if (text.length() > MAX_DRAW_TEXT_LENGTH) {
+            throw new OverlayApiException("Draw text must not exceed 256 characters");
+        }
+        requireCoordinate(intent, "x");
+        requireCoordinate(intent, "y");
+        normalizeDrawColor(intent);
+        if (!intent.hasExtra("text_size")) intent.putExtra("text_size", 18);
+        validateOptionalRange(intent, "text_size", 8, 72);
+    }
+
+    private static void validateDrawBox(Intent intent) throws OverlayApiException {
+        requireCoordinate(intent, "x");
+        requireCoordinate(intent, "y");
+        requireDimension(intent, "width");
+        requireDimension(intent, "height");
+        String label = intent.hasExtra("label")
+            ? requireStringExtra(intent, "label") : "Object";
+        if (label.length() > MAX_DRAW_TEXT_LENGTH) {
+            throw new OverlayApiException("Box label must not exceed 256 characters");
+        }
+        intent.putExtra("label", label);
+        if (intent.hasExtra("confidence")) {
+            int confidence = getIntExtra(intent, "confidence");
+            if (confidence < 0 || confidence > 100) {
+                throw new OverlayApiException("'confidence' must be between 0 and 100");
+            }
+        } else {
+            intent.putExtra("confidence", -1);
+        }
+        normalizeDrawColor(intent);
+        if (!intent.hasExtra("stroke_width")) intent.putExtra("stroke_width", 2);
+        validateOptionalRange(intent, "stroke_width", 1, 16);
+    }
+
+    private static void normalizeDrawColor(Intent intent) throws OverlayApiException {
+        if (!intent.hasExtra("color")) intent.putExtra("color", "#00FF00");
+        validateOptionalColor(intent, "color");
     }
 
     private static void validateOptionalColor(Intent intent, String name)
@@ -481,6 +575,13 @@ public class OverlayAPI {
         }
     }
 
+    private static void requireCameraOverlay() throws OverlayApiException {
+        if (!OverlayService.getCameraSnapshot().running) {
+            throw new OverlayApiException(
+                "Camera overlay is not running; use 'camera start' first");
+        }
+    }
+
     private static void requireOverlayPermission(Context context) throws OverlayApiException {
         if (!Settings.canDrawOverlays(context)) {
             throw new OverlayApiException(
@@ -507,6 +608,10 @@ public class OverlayAPI {
         out.name("success").value(success);
         if (error != null) out.name("error").value(error);
         out.name("permission_granted").value(Settings.canDrawOverlays(context));
+        out.name("camera_permission_granted").value(
+            context.checkSelfPermission(Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED);
+        out.name("accessibility_required").value(false);
         out.name("running").value(snapshot.running);
         out.name("visible").value(snapshot.visible);
         out.name("text").value(snapshot.text);
@@ -526,7 +631,28 @@ public class OverlayAPI {
         out.name("volume").value(snapshot.volume);
         out.name("javascript_enabled").value(snapshot.javascriptEnabled);
         out.name("focusable").value(snapshot.focusable);
+        writeCameraStatus(out, OverlayService.getCameraSnapshot());
         writeStyle(out, snapshot.style);
+    }
+
+    private static void writeCameraStatus(JsonWriter out,
+            OverlayService.CameraSnapshot camera) throws Exception {
+        out.name("camera").beginObject();
+        out.name("running").value(camera.running);
+        out.name("connected").value(camera.connected);
+        out.name("state").value(camera.state);
+        out.name("socket_name").value(camera.socketName);
+        out.name("width").value(camera.frameWidth);
+        out.name("height").value(camera.frameHeight);
+        out.name("format").value(camera.format);
+        out.name("sequence").value(camera.sequence);
+        out.name("timestamp_nanos").value(camera.timestampNanos);
+        out.name("received_frames").value(camera.receivedFrames);
+        out.name("decoded_frames").value(camera.decodedFrames);
+        out.name("dropped_frames").value(camera.droppedFrames);
+        out.name("draw_marks").value(camera.drawMarks);
+        if (!camera.error.isEmpty()) out.name("error").value(camera.error);
+        out.endObject();
     }
 
     private static void writeStyle(JsonWriter out, OverlayService.StyleSnapshot style)

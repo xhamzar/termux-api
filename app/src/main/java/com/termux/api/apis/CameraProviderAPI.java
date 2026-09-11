@@ -1,7 +1,9 @@
 package com.termux.api.apis;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraManager;
@@ -48,7 +50,8 @@ public final class CameraProviderAPI {
 
     public static boolean requiresCameraPermission(Intent intent) {
         String action = getRequestedAction(intent);
-        return "photo".equals(action) || "record".equals(action) || "stream".equals(action);
+        return "photo".equals(action) || "record".equals(action) || "stream".equals(action) ||
+            "control".equals(action);
     }
 
     public static void onReceive(TermuxApiReceiver receiver, Context context, Intent intent) {
@@ -78,7 +81,8 @@ public final class CameraProviderAPI {
                             writeCameraInfo(context, intent, out);
                             break;
                         case "status":
-                            writeSnapshot(out, true, null, CameraProviderService.getSnapshot());
+                            writeSnapshot(out, true, null, CameraProviderService.getSnapshot(),
+                                context);
                             break;
                         case "stream":
                             validateStreamRequest(context, intent);
@@ -88,11 +92,16 @@ public final class CameraProviderAPI {
                             validateRecordRequest(context, intent);
                             writeServiceResult(context, intent, CameraProviderService.ACTION_RECORD, out);
                             break;
+                        case "control":
+                            validateControlRequest(context, intent);
+                            writeServiceResult(context, intent, CameraProviderService.ACTION_CONTROL, out);
+                            break;
                         case "stop":
                         case "record_stop":
                         case "record-stop":
                             if (!CameraProviderService.isRunning()) {
-                                writeSnapshot(out, true, null, CameraProviderService.getSnapshot());
+                                writeSnapshot(out, true, null,
+                                    CameraProviderService.getSnapshot(), context);
                             } else {
                                 writeServiceResult(context, intent, CameraProviderService.ACTION_STOP, out);
                             }
@@ -172,7 +181,8 @@ public final class CameraProviderAPI {
             JsonWriter out) throws Exception {
         Bundle result = dispatchServiceCommand(context, source, action);
         writeSnapshot(out, result.getString(CameraProviderService.RESULT_ERROR) == null,
-            result.getString(CameraProviderService.RESULT_ERROR), CameraProviderService.getSnapshot());
+            result.getString(CameraProviderService.RESULT_ERROR),
+            CameraProviderService.getSnapshot(), context);
     }
 
     private static Bundle dispatchServiceCommand(Context context, Intent source, String action)
@@ -275,6 +285,70 @@ public final class CameraProviderAPI {
         validateRange(intent, "bitrate", 100_000, 100_000_000, 8_000_000);
     }
 
+    private static void validateControlRequest(Context context, Intent intent)
+            throws CameraProviderException {
+        if (!CameraProviderService.isRunning()) {
+            throw new CameraProviderException("Camera provider is not running");
+        }
+        boolean hasControl = false;
+        if (intent.hasExtra("camera")) {
+            String cameraId = requireString(intent, "camera");
+            try {
+                CameraManager manager = (CameraManager) context.getSystemService(
+                    Context.CAMERA_SERVICE);
+                if (!Arrays.asList(manager.getCameraIdList()).contains(cameraId)) {
+                    throw new CameraProviderException("Unknown camera id: " + cameraId);
+                }
+            } catch (android.hardware.camera2.CameraAccessException e) {
+                throw new CameraProviderException("Unable to enumerate cameras");
+            }
+            intent.putExtra("camera", cameraId);
+            hasControl = true;
+        }
+        for (String parameter : new String[]{"width", "height", "fps"}) {
+            if (!intent.hasExtra(parameter)) continue;
+            int maximum = "fps".equals(parameter) ? 240 : 10_000;
+            validateRange(intent, parameter, 1, maximum, 1);
+            hasControl = true;
+        }
+        if (intent.hasExtra("zoom")) {
+            Object value = intent.getExtras() == null ? null : intent.getExtras().get("zoom");
+            if (!(value instanceof Float)) {
+                throw new CameraProviderException("'zoom' must be a floating-point value");
+            }
+            float zoom = intent.getFloatExtra("zoom", 1f);
+            if (Float.isNaN(zoom) || Float.isInfinite(zoom) || zoom < 1f || zoom > 100f) {
+                throw new CameraProviderException("'zoom' must be between 1 and 100");
+            }
+            hasControl = true;
+        }
+        if (intent.hasExtra("autofocus")) {
+            String autofocus = requireString(intent, "autofocus").toLowerCase(Locale.ROOT);
+            if (!("continuous".equals(autofocus) || "auto".equals(autofocus) ||
+                    "off".equals(autofocus))) {
+                throw new CameraProviderException(
+                    "'autofocus' must be continuous, auto, or off");
+            }
+            intent.putExtra("autofocus", autofocus);
+            hasControl = true;
+        }
+        if (intent.hasExtra("flash")) {
+            String flash = requireString(intent, "flash").toLowerCase(Locale.ROOT);
+            if (!("off".equals(flash) || "torch".equals(flash))) {
+                throw new CameraProviderException("'flash' must be off or torch");
+            }
+            intent.putExtra("flash", flash);
+            hasControl = true;
+        }
+        if (intent.hasExtra("exposure")) {
+            validateRange(intent, "exposure", -100, 100, 0);
+            hasControl = true;
+        }
+        if (!hasControl) {
+            throw new CameraProviderException("At least one camera control is required");
+        }
+    }
+
     private static void validateCameraAndCaptureParameters(Context context, Intent intent)
             throws CameraProviderException {
         String cameraId = getString(intent, "camera", "0");
@@ -361,6 +435,9 @@ public final class CameraProviderAPI {
             throw new CameraProviderException("Unknown camera id: " + requestedId);
         }
         out.name("success").value(true);
+        out.name("camera_permission_granted").value(
+            context.checkSelfPermission(Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED);
         out.name("cameras").beginArray();
         for (String cameraId : manager.getCameraIdList()) {
             if (requestedId != null && !requestedId.equals(cameraId)) continue;
@@ -422,9 +499,12 @@ public final class CameraProviderAPI {
     }
 
     private static void writeSnapshot(JsonWriter out, boolean success, String error,
-            CameraProviderService.Snapshot snapshot) throws Exception {
+            CameraProviderService.Snapshot snapshot, Context context) throws Exception {
         out.name("success").value(success);
         if (error != null) out.name("error").value(error);
+        out.name("camera_permission_granted").value(
+            context.checkSelfPermission(Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED);
         out.name("running").value(snapshot.running);
         out.name("mode").value(snapshot.mode);
         out.name("camera_id").value(snapshot.cameraId);
@@ -442,6 +522,11 @@ public final class CameraProviderAPI {
         out.name("dropped_frames").value(snapshot.droppedFrames);
         out.name("clients").value(snapshot.clients);
         out.name("started_at").value(snapshot.startedAt);
+        out.name("zoom").value(snapshot.zoom);
+        out.name("max_zoom").value(snapshot.maxZoom);
+        out.name("autofocus").value(snapshot.autofocus);
+        out.name("flash").value(snapshot.flash);
+        out.name("exposure").value(snapshot.exposure);
     }
 
     private static final class CameraProviderException extends Exception {

@@ -4,6 +4,9 @@ Dokumen ini menjelaskan penggunaan API `Touch` dan `Overlay` dari Termux, mulai 
 instalasi sampai penghentian layanan. Kedua API memakai IPC Termux:API yang sudah ada;
 tidak membutuhkan root dan tidak menjalankan daemon permanen.
 
+Preview Camera Provider, perintah `termux-overlay camera`, dan canvas hasil AI dijelaskan di
+[Camera, Overlay, OpenCV, and AI Vision](CAMERA_OVERLAY_VISION.md).
+
 > **Peringatan keamanan:** Touch API menggunakan layanan Aksesibilitas sehingga dapat
 > mengirim gestur ke layar. Aktifkan hanya pada perangkat dan skrip yang Anda percaya.
 

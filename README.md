@@ -61,6 +61,10 @@ A reference `termux-camera` command is available in [`scripts/termux-camera`](sc
 See [the complete Camera Provider guide](docs/CAMERA_PROVIDER_API.md) for installation, all options,
 the framed binary protocol, filesystem Unix socket proxy, and Python/OpenCV/AI examples.
 
+The Overlay can also consume the framed Unix stream directly and display AI text/bounding boxes.
+See [Camera, Overlay, OpenCV, and AI Vision](docs/CAMERA_OVERLAY_VISION.md) for the
+`termux-overlay camera` and `draw` commands, live camera controls, and reference Python consumers.
+
 ## Floating overlay API
 
 The `Overlay` API displays a movable, tappable status panel over other apps. It uses the existing

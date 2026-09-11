@@ -34,6 +34,9 @@
     <string name="overlay_notification_title">Termux:API overlay is running</string>
     <string name="overlay_notification_text">Use a Termux overlay command or tap Stop to close it.</string>
     <string name="overlay_notification_stop">Stop</string>
+    <string name="overlay_camera_description">Realtime camera preview</string>
+    <string name="overlay_camera_connected">Camera stream connected</string>
+    <string name="overlay_camera_reconnecting">Waiting for camera stream</string>
     <string name="camera_provider_service_description">Provides camera frames and video to user-controlled Termux clients.</string>
     <string name="camera_provider_notification_channel_name">Camera provider</string>
     <string name="camera_provider_notification_channel_description">Shows while Termux:API is streaming or recording camera data.</string>

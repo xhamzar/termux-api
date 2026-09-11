@@ -12,8 +12,11 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.GradientDrawable;
 import android.media.AudioAttributes;
@@ -61,6 +64,8 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Foreground service that owns and cleans up the floating overlay window. */
 public class OverlayService extends Service {
@@ -83,6 +88,14 @@ public class OverlayService extends Service {
     public static final String ACTION_VOLUME = "volume";
     public static final String ACTION_STYLE = "style";
     public static final String ACTION_RESET_STYLE = "reset_style";
+    public static final String ACTION_CAMERA_START = "camera_start";
+    public static final String ACTION_CAMERA_STOP = "camera_stop";
+    public static final String ACTION_CAMERA_STATUS = "camera_status";
+    public static final String ACTION_CAMERA_RESIZE = "camera_resize";
+    public static final String ACTION_CAMERA_POSITION = "camera_position";
+    public static final String ACTION_DRAW_TEXT = "draw_text";
+    public static final String ACTION_DRAW_BOX = "draw_box";
+    public static final String ACTION_DRAW_CLEAR = "draw_clear";
 
     static final String EXTRA_RESULT_RECEIVER = "com.termux.api.overlay.RESULT_RECEIVER";
     static final String RESULT_ERROR = "error";
@@ -96,6 +109,7 @@ public class OverlayService extends Service {
     private static final int MIN_CONTENT_HEIGHT_DP = 320;
     private static final int MAX_IMAGE_DIMENSION = 2_048;
     private static final int MAX_EVENTS = 100;
+    private static final int MAX_DRAW_MARKS = 100;
     private static final int DEFAULT_BACKGROUND_COLOR = 0xFF202124;
     private static final int DEFAULT_BACKGROUND_OPACITY = 92;
     private static final int DEFAULT_TEXT_COLOR = 0xFFFFFFFF;
@@ -112,6 +126,7 @@ public class OverlayService extends Service {
     private static final Object EVENT_LOCK = new Object();
     private static final ArrayDeque<OverlayEvent> eventQueue = new ArrayDeque<>();
     private static volatile Snapshot snapshot = Snapshot.stopped();
+    private static volatile CameraSnapshot cameraSnapshot = CameraSnapshot.stopped();
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable playbackPositionUpdater = new Runnable() {
@@ -144,6 +159,20 @@ public class OverlayService extends Service {
     private WebView webView;
     private ImageView imageView;
     private Bitmap displayedBitmap;
+    private CameraStreamClient cameraClient;
+    private VisionOverlayView visionOverlayView;
+    private final AtomicReference<PendingCameraFrame> pendingCameraFrame =
+        new AtomicReference<>();
+    private final AtomicBoolean cameraUiPosted = new AtomicBoolean();
+    private String cameraSocketName = "";
+    private boolean cameraConnected;
+    private String cameraError = "";
+    private int cameraFrameWidth;
+    private int cameraFrameHeight;
+    private String cameraFrameFormat = "none";
+    private long cameraSequence;
+    private long cameraTimestampNanos;
+    private long cameraDecodedFrames;
     private TextureView videoView;
     private MediaPlayer mediaPlayer;
     private Surface videoSurface;
@@ -204,6 +233,10 @@ public class OverlayService extends Service {
 
     public static Snapshot getSnapshot() {
         return snapshot;
+    }
+
+    public static CameraSnapshot getCameraSnapshot() {
+        return cameraSnapshot;
     }
 
     public static List<OverlayEvent> getEvents(boolean clear) {
@@ -298,6 +331,28 @@ public class OverlayService extends Service {
                     break;
                 case ACTION_VOLUME:
                     setVideoVolume(intent.getIntExtra("volume", 100));
+                    break;
+                case ACTION_CAMERA_START:
+                    startCameraPreview(intent);
+                    break;
+                case ACTION_CAMERA_STOP:
+                    stopCameraPreview();
+                    break;
+                case ACTION_CAMERA_RESIZE:
+                    resizeOverlay(intent.getIntExtra("width", 1),
+                        intent.getIntExtra("height", 1));
+                    break;
+                case ACTION_CAMERA_POSITION:
+                    moveOverlay(intent.getIntExtra("x", 0), intent.getIntExtra("y", 0));
+                    break;
+                case ACTION_DRAW_TEXT:
+                    drawCameraText(intent);
+                    break;
+                case ACTION_DRAW_BOX:
+                    drawCameraBox(intent);
+                    break;
+                case ACTION_DRAW_CLEAR:
+                    clearCameraDrawing();
                     break;
                 case ACTION_STOP:
                     removeOverlay();
@@ -810,6 +865,153 @@ public class OverlayService extends Service {
         decoder.start();
     }
 
+    private void startCameraPreview(Intent intent) {
+        if (overlayView == null) createOverlayView();
+        applyUpdates(intent);
+        releaseContentResources();
+        setWindowFocusable(false);
+
+        cameraSocketName = intent.getStringExtra("socket_name");
+        if (cameraSocketName == null || cameraSocketName.isEmpty()) {
+            cameraSocketName = "termux.camera.frames";
+        }
+        contentType = "camera";
+        contentSource = cameraSocketName;
+        playbackState = "reconnecting";
+        cameraError = "";
+        cameraConnected = false;
+        cameraDecodedFrames = 0;
+        cameraFrameWidth = 0;
+        cameraFrameHeight = 0;
+        cameraFrameFormat = "none";
+        cameraSequence = 0;
+        cameraTimestampNanos = 0;
+        if (!intent.hasExtra("height") && windowParams.height < dpToPixels(MIN_CONTENT_HEIGHT_DP)) {
+            windowParams.height = dpToPixels(MIN_CONTENT_HEIGHT_DP);
+        }
+
+        imageView = new ImageView(this);
+        imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        imageView.setContentDescription(getString(R.string.overlay_camera_description));
+        contentContainer.addView(imageView, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        visionOverlayView = new VisionOverlayView(this);
+        contentContainer.addView(visionOverlayView, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        contentContainer.setVisibility(View.VISIBLE);
+        overlayView.setVisibility(View.VISIBLE);
+
+        final int generation = contentGeneration;
+        cameraClient = new CameraStreamClient(cameraSocketName,
+            new CameraStreamClient.Listener() {
+                @Override
+                public void onConnectionChanged(boolean connected, @Nullable String error) {
+                    mainHandler.post(() -> {
+                        if (generation != contentGeneration || cameraClient == null) return;
+                        cameraConnected = connected;
+                        cameraError = error == null ? "" : error;
+                        playbackState = connected ? "streaming" : "reconnecting";
+                        statusView.setText(connected
+                            ? R.string.overlay_camera_connected
+                            : R.string.overlay_camera_reconnecting);
+                        publishCameraSnapshot();
+                        publishSnapshot();
+                    });
+                }
+
+                @Override
+                public void onFrame(CameraStreamClient.Frame frame) {
+                    if (generation != contentGeneration) return;
+                    Bitmap bitmap = CameraStreamClient.decodeBitmap(frame);
+                    if (bitmap == null || generation != contentGeneration) {
+                        if (bitmap != null) bitmap.recycle();
+                        return;
+                    }
+                    PendingCameraFrame replaced = pendingCameraFrame.getAndSet(
+                        new PendingCameraFrame(frame, bitmap));
+                    if (replaced != null) replaced.bitmap.recycle();
+                    if (cameraUiPosted.compareAndSet(false, true)) {
+                        mainHandler.post(() -> displayPendingCameraFrame(generation));
+                    }
+                }
+            });
+        cameraClient.start();
+        clampPosition();
+        windowManager.updateViewLayout(overlayView, windowParams);
+        publishCameraSnapshot();
+        publishSnapshot();
+    }
+
+    private void displayPendingCameraFrame(int generation) {
+        if (generation != contentGeneration) return;
+        cameraUiPosted.set(false);
+        PendingCameraFrame pending = pendingCameraFrame.getAndSet(null);
+        if (pending == null) return;
+        Bitmap bitmap = pending.bitmap;
+        if (generation != contentGeneration || imageView == null) {
+            bitmap.recycle();
+            return;
+        }
+        CameraStreamClient.Frame frame = pending.frame;
+        cameraFrameWidth = frame.width;
+        cameraFrameHeight = frame.height;
+        cameraFrameFormat = frame.formatName();
+        cameraSequence = frame.sequence;
+        cameraTimestampNanos = frame.timestampNanos;
+        Bitmap previous = displayedBitmap;
+        displayedBitmap = bitmap;
+        imageView.setImageBitmap(bitmap);
+        if (previous != null && previous != bitmap) previous.recycle();
+        if (visionOverlayView != null) {
+            visionOverlayView.setFrameSize(cameraFrameWidth, cameraFrameHeight);
+        }
+        cameraDecodedFrames++;
+        publishCameraSnapshot();
+        publishSnapshot();
+        if (pendingCameraFrame.get() != null && cameraUiPosted.compareAndSet(false, true)) {
+            mainHandler.post(() -> displayPendingCameraFrame(generation));
+        }
+    }
+
+    private void stopCameraPreview() {
+        requireCameraPreview();
+        clearContent();
+    }
+
+    private void drawCameraText(Intent intent) {
+        requireCameraPreview();
+        visionOverlayView.addText(intent.getStringExtra("text"),
+            intent.getIntExtra("x", 0), intent.getIntExtra("y", 0),
+            Color.parseColor(intent.getStringExtra("color")),
+            intent.getIntExtra("text_size", 18));
+        publishCameraSnapshot();
+    }
+
+    private void drawCameraBox(Intent intent) {
+        requireCameraPreview();
+        String label = intent.getStringExtra("label");
+        int confidence = intent.getIntExtra("confidence", -1);
+        if (confidence >= 0) label = label + " " + confidence + "%";
+        visionOverlayView.addBox(intent.getIntExtra("x", 0), intent.getIntExtra("y", 0),
+            intent.getIntExtra("width", 1), intent.getIntExtra("height", 1), label,
+            Color.parseColor(intent.getStringExtra("color")),
+            intent.getIntExtra("stroke_width", 2));
+        publishCameraSnapshot();
+    }
+
+    private void clearCameraDrawing() {
+        requireCameraPreview();
+        visionOverlayView.clearMarks();
+        publishCameraSnapshot();
+    }
+
+    private void requireCameraPreview() {
+        requireOverlayView();
+        if (cameraClient == null || visionOverlayView == null || !"camera".equals(contentType)) {
+            throw new IllegalStateException("Camera overlay is not running");
+        }
+    }
+
     private Bitmap decodeSampledBitmap(String path) {
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
@@ -1055,6 +1257,24 @@ public class OverlayService extends Service {
 
     private void releaseContentResources() {
         contentGeneration++;
+        if (cameraClient != null) {
+            cameraClient.close();
+            cameraClient = null;
+        }
+        PendingCameraFrame pendingCamera = pendingCameraFrame.getAndSet(null);
+        if (pendingCamera != null) pendingCamera.bitmap.recycle();
+        cameraUiPosted.set(false);
+        visionOverlayView = null;
+        cameraSocketName = "";
+        cameraConnected = false;
+        cameraError = "";
+        cameraFrameWidth = 0;
+        cameraFrameHeight = 0;
+        cameraFrameFormat = "none";
+        cameraSequence = 0;
+        cameraTimestampNanos = 0;
+        cameraDecodedFrames = 0;
+        cameraSnapshot = CameraSnapshot.stopped();
         releaseMediaPlayer();
         if (webView != null) {
             webView.stopLoading();
@@ -1179,6 +1399,26 @@ public class OverlayService extends Service {
                 focusable,
                 createStyleSnapshot());
         }
+    }
+
+    private void publishCameraSnapshot() {
+        CameraStreamClient client = cameraClient;
+        cameraSnapshot = new CameraSnapshot(
+            client != null && "camera".equals(contentType),
+            cameraConnected,
+            cameraConnected ? "streaming" :
+                (client == null ? "stopped" : "reconnecting"),
+            cameraSocketName,
+            cameraFrameWidth,
+            cameraFrameHeight,
+            cameraFrameFormat,
+            cameraSequence,
+            cameraTimestampNanos,
+            client == null ? 0 : client.getReceivedFrames(),
+            cameraDecodedFrames,
+            client == null ? 0 : client.getDroppedFrames(),
+            visionOverlayView == null ? 0 : visionOverlayView.getMarkCount(),
+            cameraError);
     }
 
     private static void enqueueEvent(String type, String id, int x, int y) {
@@ -1376,6 +1616,48 @@ public class OverlayService extends Service {
         }
     }
 
+    public static final class CameraSnapshot {
+        public final boolean running;
+        public final boolean connected;
+        public final String state;
+        public final String socketName;
+        public final int frameWidth;
+        public final int frameHeight;
+        public final String format;
+        public final long sequence;
+        public final long timestampNanos;
+        public final long receivedFrames;
+        public final long decodedFrames;
+        public final long droppedFrames;
+        public final int drawMarks;
+        public final String error;
+
+        CameraSnapshot(boolean running, boolean connected, String state, String socketName,
+                int frameWidth, int frameHeight, String format, long sequence,
+                long timestampNanos, long receivedFrames, long decodedFrames,
+                long droppedFrames, int drawMarks, String error) {
+            this.running = running;
+            this.connected = connected;
+            this.state = state;
+            this.socketName = socketName;
+            this.frameWidth = frameWidth;
+            this.frameHeight = frameHeight;
+            this.format = format;
+            this.sequence = sequence;
+            this.timestampNanos = timestampNanos;
+            this.receivedFrames = receivedFrames;
+            this.decodedFrames = decodedFrames;
+            this.droppedFrames = droppedFrames;
+            this.drawMarks = drawMarks;
+            this.error = error;
+        }
+
+        static CameraSnapshot stopped() {
+            return new CameraSnapshot(false, false, "stopped", "", 0, 0, "none",
+                0, 0, 0, 0, 0, 0, "");
+        }
+    }
+
     private StyleSnapshot createStyleSnapshot() {
         return new StyleSnapshot(backgroundColor, backgroundOpacity, textColor, statusColor,
             borderColor, buttonColor, buttonTextColor, opacity, textSizeSp, cornerRadiusDp,
@@ -1458,6 +1740,128 @@ public class OverlayService extends Service {
         public boolean performClick() {
             super.performClick();
             return true;
+        }
+    }
+
+    private static final class VisionOverlayView extends View {
+        private final List<DrawMark> marks = new ArrayList<>();
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF drawRectangle = new RectF();
+        private int frameWidth;
+        private int frameHeight;
+
+        VisionOverlayView(Context context) {
+            super(context);
+            setWillNotDraw(false);
+        }
+
+        void setFrameSize(int width, int height) {
+            if (frameWidth == width && frameHeight == height) return;
+            frameWidth = width;
+            frameHeight = height;
+            invalidate();
+        }
+
+        void addText(String text, int x, int y, int color, int textSizeSp) {
+            addMark(DrawMark.text(text, x, y, color,
+                textSizeSp * getResources().getDisplayMetrics().scaledDensity));
+        }
+
+        void addBox(int x, int y, int width, int height, String label, int color,
+                int strokeWidthDp) {
+            addMark(DrawMark.box(x, y, width, height, label, color,
+                strokeWidthDp * getResources().getDisplayMetrics().density));
+        }
+
+        private void addMark(DrawMark mark) {
+            if (marks.size() == MAX_DRAW_MARKS) marks.remove(0);
+            marks.add(mark);
+            invalidate();
+        }
+
+        void clearMarks() {
+            marks.clear();
+            invalidate();
+        }
+
+        int getMarkCount() {
+            return marks.size();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float scale = frameWidth > 0 && frameHeight > 0
+                ? Math.min(getWidth() / (float) frameWidth, getHeight() / (float) frameHeight)
+                : 1f;
+            float offsetX = frameWidth > 0 ? (getWidth() - frameWidth * scale) / 2f : 0;
+            float offsetY = frameHeight > 0 ? (getHeight() - frameHeight * scale) / 2f : 0;
+            for (DrawMark mark : marks) {
+                paint.setColor(mark.color);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(Math.max(1f, mark.size));
+                if (mark.box) {
+                    drawRectangle.set(offsetX + mark.x * scale,
+                        offsetY + mark.y * scale,
+                        offsetX + (mark.x + mark.width) * scale,
+                        offsetY + (mark.y + mark.height) * scale);
+                    canvas.drawRect(drawRectangle, paint);
+                    if (!mark.text.isEmpty()) {
+                        paint.setStyle(Paint.Style.FILL);
+                        paint.setTextSize(Math.max(12f, 16f *
+                            getResources().getDisplayMetrics().scaledDensity));
+                        canvas.drawText(mark.text, drawRectangle.left,
+                            Math.max(paint.getTextSize(), drawRectangle.top - 4f), paint);
+                    }
+                } else {
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setTextSize(Math.max(1f, mark.size));
+                    canvas.drawText(mark.text, offsetX + mark.x * scale,
+                        offsetY + mark.y * scale, paint);
+                }
+            }
+        }
+    }
+
+    private static final class DrawMark {
+        final boolean box;
+        final String text;
+        final int x;
+        final int y;
+        final int width;
+        final int height;
+        final int color;
+        final float size;
+
+        private DrawMark(boolean box, String text, int x, int y, int width, int height,
+                int color, float size) {
+            this.box = box;
+            this.text = text == null ? "" : text;
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+            this.color = color;
+            this.size = size;
+        }
+
+        static DrawMark text(String text, int x, int y, int color, float textSize) {
+            return new DrawMark(false, text, x, y, 0, 0, color, textSize);
+        }
+
+        static DrawMark box(int x, int y, int width, int height, String label, int color,
+                float strokeWidth) {
+            return new DrawMark(true, label, x, y, width, height, color, strokeWidth);
+        }
+    }
+
+    private static final class PendingCameraFrame {
+        final CameraStreamClient.Frame frame;
+        final Bitmap bitmap;
+
+        PendingCameraFrame(CameraStreamClient.Frame frame, Bitmap bitmap) {
+            this.frame = frame;
+            this.bitmap = bitmap;
         }
     }
 }

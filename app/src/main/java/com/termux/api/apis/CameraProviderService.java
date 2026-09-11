@@ -75,6 +75,7 @@ public class CameraProviderService extends Service {
 
     public static final String ACTION_STREAM = "stream";
     public static final String ACTION_RECORD = "record";
+    public static final String ACTION_CONTROL = "control";
     public static final String ACTION_STOP = "stop";
     static final String EXTRA_RESULT_RECEIVER = "com.termux.api.camera.RESULT_RECEIVER";
     static final String RESULT_ERROR = "error";
@@ -103,6 +104,12 @@ public class CameraProviderService extends Service {
     private Intent pendingCommand;
     private int generation;
     private boolean stopping;
+    private CameraCharacteristics activeCharacteristics;
+    private float zoom = 1f;
+    private float maxZoom = 1f;
+    private String autofocus = "continuous";
+    private String flash = "off";
+    private int exposure;
 
     public static boolean isRunning() {
         return snapshot.running;
@@ -139,6 +146,9 @@ public class CameraProviderService extends Service {
             case ACTION_RECORD:
                 startRecording(intent, startId);
                 break;
+            case ACTION_CONTROL:
+                controlCamera(intent, startId);
+                break;
             case ACTION_STOP:
                 stopActive();
                 sendResult(intent, null);
@@ -174,6 +184,8 @@ public class CameraProviderService extends Service {
                     return thread;
                 });
             CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
+            activeCharacteristics = manager.getCameraCharacteristics(activeConfig.cameraId);
+            loadControls(intent);
             manager.openCamera(activeConfig.cameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice camera) {
@@ -222,7 +234,8 @@ public class CameraProviderService extends Service {
                             request.addTarget(surface);
                             applyCaptureSettings(request, activeConfig);
                             session.setRepeatingRequest(request.build(), null, cameraHandler);
-                            snapshot = Snapshot.fromConfig(activeConfig, "stream", true,
+                            triggerAutofocusIfRequested(request, session);
+                            snapshot = createSnapshot("stream", true,
                                 frameDispatcher.getClientCount(), 0, 0);
                             sendPendingResult(null);
                         } catch (CameraAccessException | IllegalArgumentException e) {
@@ -294,6 +307,8 @@ public class CameraProviderService extends Service {
                 intent.getIntExtra("height", 720));
             if (selected == null) throw new IllegalStateException("No video output size available");
             activeConfig = Config.forRecord(intent, selected);
+            activeCharacteristics = characteristics;
+            loadControls(intent);
             int currentGeneration = ++generation;
 
             mediaRecorder = new MediaRecorder();
@@ -355,7 +370,8 @@ public class CameraProviderService extends Service {
                             applyCaptureSettings(request, activeConfig);
                             session.setRepeatingRequest(request.build(), null, cameraHandler);
                             mediaRecorder.start();
-                            snapshot = Snapshot.fromConfig(activeConfig, "record", true, 0, 0, 0);
+                            triggerAutofocusIfRequested(request, session);
+                            snapshot = createSnapshot("record", true, 0, 0, 0);
                             sendPendingResult(null);
                         } catch (CameraAccessException | RuntimeException e) {
                             failStartIfCurrent("Unable to start recording: " + safeMessage(e),
@@ -377,11 +393,214 @@ public class CameraProviderService extends Service {
     }
 
     private void applyCaptureSettings(CaptureRequest.Builder request, Config config) {
-        request.set(CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+        request.set(CaptureRequest.CONTROL_AF_MODE, autofocusMode());
+        request.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+        request.set(CaptureRequest.FLASH_MODE, "torch".equals(flash)
+            ? CaptureRequest.FLASH_MODE_TORCH : CaptureRequest.FLASH_MODE_OFF);
+        Range<Integer> exposureRange = activeCharacteristics == null ? null :
+            activeCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+        if (exposureRange != null && exposureRange.contains(exposure)) {
+            request.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, exposure);
+        }
+        applyZoom(request);
         if (config.fpsRange != null) {
             request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, config.fpsRange);
         }
+    }
+
+    private int autofocusMode() {
+        if ("off".equals(autofocus)) return CaptureRequest.CONTROL_AF_MODE_OFF;
+        if ("auto".equals(autofocus)) return CaptureRequest.CONTROL_AF_MODE_AUTO;
+        return CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO;
+    }
+
+    private void triggerAutofocusIfRequested(CaptureRequest.Builder request,
+            CameraCaptureSession session) throws CameraAccessException {
+        if (!"auto".equals(autofocus)) return;
+        request.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
+        session.capture(request.build(), null, cameraHandler);
+        request.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
+    }
+
+    private void applyZoom(CaptureRequest.Builder request) {
+        if (activeCharacteristics == null || zoom <= 1f) return;
+        Rect sensor = activeCharacteristics.get(
+            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+        if (sensor == null) return;
+        int cropWidth = Math.max(1, Math.round(sensor.width() / zoom));
+        int cropHeight = Math.max(1, Math.round(sensor.height() / zoom));
+        int left = sensor.left + (sensor.width() - cropWidth) / 2;
+        int top = sensor.top + (sensor.height() - cropHeight) / 2;
+        request.set(CaptureRequest.SCALER_CROP_REGION,
+            new Rect(left, top, left + cropWidth, top + cropHeight));
+    }
+
+    private void loadControls(Intent intent) {
+        Float availableZoom = activeCharacteristics == null ? null : activeCharacteristics.get(
+            CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM);
+        maxZoom = availableZoom == null ? 1f : Math.max(1f, availableZoom);
+        float requestedZoom = intent.getFloatExtra("zoom", 1f);
+        if (requestedZoom < 1f || requestedZoom > maxZoom) {
+            throw new IllegalArgumentException("'zoom' must be between 1 and " + maxZoom);
+        }
+        zoom = requestedZoom;
+        int[] modes = activeCharacteristics == null ? null : activeCharacteristics.get(
+            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+        if (intent.getStringExtra("autofocus") == null) {
+            autofocus = contains(modes, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                ? "continuous" : (contains(modes, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                    ? "auto" : "off");
+        } else {
+            autofocus = intent.getStringExtra("autofocus");
+            int requestedMode = autofocusMode();
+            if (!contains(modes, requestedMode)) {
+                throw new IllegalArgumentException(
+                    "Selected camera does not support autofocus mode '" + autofocus + "'");
+            }
+        }
+        flash = intent.getStringExtra("flash") == null ? "off" : intent.getStringExtra("flash");
+        Boolean flashAvailable = activeCharacteristics == null ? null : activeCharacteristics.get(
+            CameraCharacteristics.FLASH_INFO_AVAILABLE);
+        if ("torch".equals(flash) && !Boolean.TRUE.equals(flashAvailable)) {
+            throw new IllegalArgumentException("Selected camera does not provide a flash");
+        }
+        exposure = intent.getIntExtra("exposure", 0);
+        Range<Integer> exposureRange = activeCharacteristics == null ? null :
+            activeCharacteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+        if (intent.hasExtra("exposure") &&
+                (exposureRange == null || !exposureRange.contains(exposure))) {
+            throw new IllegalArgumentException(
+                "'exposure' is outside the camera compensation range");
+        }
+    }
+
+    private void controlCamera(Intent intent, int startId) {
+        if (activeConfig == null || captureSession == null || cameraDevice == null ||
+                !snapshot.running) {
+            sendResult(intent, "Camera provider is not running");
+            return;
+        }
+        boolean restart = intent.hasExtra("camera") || intent.hasExtra("width") ||
+            intent.hasExtra("height") || intent.hasExtra("fps");
+        if (restart) {
+            if (!"stream".equals(snapshot.mode)) {
+                sendResult(intent, "Camera, resolution, and FPS can only change in stream mode");
+                return;
+            }
+            if (activeConfig.outputs.contains("pipe")) {
+                sendResult(intent,
+                    "Pipe streams cannot be restarted from a separate control command");
+                return;
+            }
+            Intent restartIntent = activeConfig.toStreamIntent(this, zoom, autofocus, flash,
+                exposure);
+            copyIfPresent(intent, restartIntent, "camera");
+            copyIfPresent(intent, restartIntent, "width");
+            copyIfPresent(intent, restartIntent, "height");
+            copyIfPresent(intent, restartIntent, "fps");
+            copyIfPresent(intent, restartIntent, "zoom");
+            copyIfPresent(intent, restartIntent, "autofocus");
+            copyIfPresent(intent, restartIntent, "flash");
+            copyIfPresent(intent, restartIntent, "exposure");
+            ResultReceiver receiver = intent.getParcelableExtra(EXTRA_RESULT_RECEIVER);
+            if (receiver != null) restartIntent.putExtra(EXTRA_RESULT_RECEIVER, receiver);
+            startStream(restartIntent, startId);
+            return;
+        }
+        float previousZoom = zoom;
+        String previousAutofocus = autofocus;
+        String previousFlash = flash;
+        int previousExposure = exposure;
+        String error = applyControlChanges(intent);
+        if (error != null) {
+            sendResult(intent, error);
+            return;
+        }
+        try {
+            Surface target = "record".equals(snapshot.mode) ? recorderSurface : imageReader.getSurface();
+            int template = "record".equals(snapshot.mode)
+                ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW;
+            CaptureRequest.Builder request = cameraDevice.createCaptureRequest(template);
+            request.addTarget(target);
+            applyCaptureSettings(request, activeConfig);
+            captureSession.setRepeatingRequest(request.build(), null, cameraHandler);
+            triggerAutofocusIfRequested(request, captureSession);
+            snapshot = createSnapshot(snapshot.mode, true,
+                frameDispatcher == null ? 0 : frameDispatcher.getClientCount(),
+                frameCounter.get(), droppedFrames.get());
+            sendResult(intent, null);
+        } catch (CameraAccessException | RuntimeException e) {
+            zoom = previousZoom;
+            autofocus = previousAutofocus;
+            flash = previousFlash;
+            exposure = previousExposure;
+            sendResult(intent, "Unable to apply camera controls: " + safeMessage(e));
+        }
+    }
+
+    @Nullable
+    private String applyControlChanges(Intent intent) {
+        float nextZoom = zoom;
+        String nextAutofocus = autofocus;
+        String nextFlash = flash;
+        int nextExposure = exposure;
+        if (intent.hasExtra("zoom")) {
+            float requested = intent.getFloatExtra("zoom", 1f);
+            if (requested < 1f || requested > maxZoom) {
+                return "'zoom' must be between 1 and " + maxZoom;
+            }
+            nextZoom = requested;
+        }
+        if (intent.hasExtra("autofocus")) {
+            String requested = intent.getStringExtra("autofocus");
+            int requestedMode = "off".equals(requested) ? CaptureRequest.CONTROL_AF_MODE_OFF
+                : ("auto".equals(requested) ? CaptureRequest.CONTROL_AF_MODE_AUTO
+                    : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+            int[] modes = activeCharacteristics == null ? null : activeCharacteristics.get(
+                CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            if (!contains(modes, requestedMode)) {
+                return "Selected camera does not support autofocus mode '" + requested + "'";
+            }
+            nextAutofocus = requested;
+        }
+        if (intent.hasExtra("flash")) {
+            String requested = intent.getStringExtra("flash");
+            Boolean available = activeCharacteristics == null ? null : activeCharacteristics.get(
+                CameraCharacteristics.FLASH_INFO_AVAILABLE);
+            if ("torch".equals(requested) && !Boolean.TRUE.equals(available)) {
+                return "Selected camera does not provide a flash";
+            }
+            nextFlash = requested;
+        }
+        if (intent.hasExtra("exposure")) {
+            int requested = intent.getIntExtra("exposure", 0);
+            Range<Integer> range = activeCharacteristics == null ? null : activeCharacteristics.get(
+                CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            if (range == null || !range.contains(requested)) {
+                return "'exposure' is outside the camera compensation range";
+            }
+            nextExposure = requested;
+        }
+        zoom = nextZoom;
+        autofocus = nextAutofocus;
+        flash = nextFlash;
+        exposure = nextExposure;
+        return null;
+    }
+
+    private static boolean contains(@Nullable int[] values, int expected) {
+        if (values == null) return false;
+        for (int value : values) if (value == expected) return true;
+        return false;
+    }
+
+    private static void copyIfPresent(Intent source, Intent target, String name) {
+        Bundle extras = source.getExtras();
+        if (extras == null || !extras.containsKey(name)) return;
+        Object value = extras.get(name);
+        if (value instanceof String) target.putExtra(name, (String) value);
+        else if (value instanceof Integer) target.putExtra(name, (Integer) value);
+        else if (value instanceof Float) target.putExtra(name, (Float) value);
     }
 
     private void failStart(String error, int startId) {
@@ -415,8 +634,14 @@ public class CameraProviderService extends Service {
         Config config = activeConfig;
         if (config == null || !snapshot.running) return;
         int clients = frameDispatcher == null ? 0 : frameDispatcher.getClientCount();
-        snapshot = Snapshot.fromConfig(config, snapshot.mode, true, clients,
+        snapshot = createSnapshot(snapshot.mode, true, clients,
             frameCounter.get(), droppedFrames.get());
+    }
+
+    private Snapshot createSnapshot(String mode, boolean running, int clients, long frames,
+            long dropped) {
+        return Snapshot.fromConfig(activeConfig, mode, running, clients, frames, dropped,
+            zoom, maxZoom, autofocus, flash, exposure);
     }
 
     private void onClientsChanged() {
@@ -487,6 +712,12 @@ public class CameraProviderService extends Service {
             frameDispatcher = null;
         }
         activeConfig = null;
+        activeCharacteristics = null;
+        zoom = 1f;
+        maxZoom = 1f;
+        autofocus = "continuous";
+        flash = "off";
+        exposure = 0;
         frameCounter.set(0);
         snapshot = Snapshot.stopped();
         stopping = false;
@@ -654,6 +885,28 @@ public class CameraProviderService extends Service {
             Collections.sort(names);
             return android.text.TextUtils.join(",", names);
         }
+
+        Intent toStreamIntent(Context context, float zoom, String autofocus, String flash,
+                int exposure) {
+            return new Intent(context, CameraProviderService.class)
+                .setAction(ACTION_STREAM)
+                .putExtra("camera", cameraId)
+                .putExtra("width", width)
+                .putExtra("height", height)
+                .putExtra("fps", fps)
+                .putExtra("format", format)
+                .putExtra("output", outputNames())
+                .putExtra("protocol", protocol)
+                .putExtra("quality", quality)
+                .putExtra("port", tcpPort)
+                .putExtra("socket_name", socketName)
+                .putExtra("socket_output", socketOutput)
+                .putExtra("directory", directory)
+                .putExtra("zoom", zoom)
+                .putExtra("autofocus", autofocus)
+                .putExtra("flash", flash)
+                .putExtra("exposure", exposure);
+        }
     }
 
     public static final class Snapshot {
@@ -674,11 +927,17 @@ public class CameraProviderService extends Service {
         public final long droppedFrames;
         public final int clients;
         public final long startedAt;
+        public final float zoom;
+        public final float maxZoom;
+        public final String autofocus;
+        public final String flash;
+        public final int exposure;
 
         private Snapshot(boolean running, String mode, String cameraId, int width, int height,
                 int fps, String format, String outputs, String protocol, int tcpPort,
                 String socketName, String file, String directory, long frames,
-                long droppedFrames, int clients, long startedAt) {
+                long droppedFrames, int clients, long startedAt, float zoom, float maxZoom,
+                String autofocus, String flash, int exposure) {
             this.running = running;
             this.mode = mode;
             this.cameraId = cameraId;
@@ -696,19 +955,25 @@ public class CameraProviderService extends Service {
             this.droppedFrames = droppedFrames;
             this.clients = clients;
             this.startedAt = startedAt;
+            this.zoom = zoom;
+            this.maxZoom = maxZoom;
+            this.autofocus = autofocus;
+            this.flash = flash;
+            this.exposure = exposure;
         }
 
         static Snapshot fromConfig(Config config, String mode, boolean running, int clients,
-                long frames, long droppedFrames) {
+                long frames, long droppedFrames, float zoom, float maxZoom,
+                String autofocus, String flash, int exposure) {
             return new Snapshot(running, mode, config.cameraId, config.width, config.height,
                 config.fps, config.format, config.outputNames(), config.protocol, config.tcpPort,
                 config.socketName, config.file, config.directory, frames, droppedFrames, clients,
-                config.startedAt);
+                config.startedAt, zoom, maxZoom, autofocus, flash, exposure);
         }
 
         static Snapshot stopped() {
             return new Snapshot(false, "none", "", 0, 0, 0, "none", "", "framed", 0,
-                "", "", "", 0, 0, 0, 0);
+                "", "", "", 0, 0, 0, 0, 1f, 1f, "continuous", "off", 0);
         }
     }
 
