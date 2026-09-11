@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -80,6 +81,8 @@ public class OverlayService extends Service {
     public static final String ACTION_PAUSE = "pause";
     public static final String ACTION_SEEK = "seek";
     public static final String ACTION_VOLUME = "volume";
+    public static final String ACTION_STYLE = "style";
+    public static final String ACTION_RESET_STYLE = "reset_style";
 
     static final String EXTRA_RESULT_RECEIVER = "com.termux.api.overlay.RESULT_RECEIVER";
     static final String RESULT_ERROR = "error";
@@ -93,6 +96,18 @@ public class OverlayService extends Service {
     private static final int MIN_CONTENT_HEIGHT_DP = 320;
     private static final int MAX_IMAGE_DIMENSION = 2_048;
     private static final int MAX_EVENTS = 100;
+    private static final int DEFAULT_BACKGROUND_COLOR = 0xFF202124;
+    private static final int DEFAULT_BACKGROUND_OPACITY = 92;
+    private static final int DEFAULT_TEXT_COLOR = 0xFFFFFFFF;
+    private static final int DEFAULT_STATUS_COLOR = 0xFFCCCCCC;
+    private static final int DEFAULT_BORDER_COLOR = 0xDC78AAFF;
+    private static final int DEFAULT_BUTTON_COLOR = 0xFF4F6B9A;
+    private static final int DEFAULT_BUTTON_TEXT_COLOR = 0xFFFFFFFF;
+    private static final int DEFAULT_TEXT_SIZE_SP = 16;
+    private static final int DEFAULT_CORNER_RADIUS_DP = 12;
+    private static final int DEFAULT_BORDER_WIDTH_DP = 1;
+    private static final int DEFAULT_PADDING_DP = 12;
+    private static final int DEFAULT_ELEVATION_DP = 8;
 
     private static final Object EVENT_LOCK = new Object();
     private static final ArrayDeque<OverlayEvent> eventQueue = new ArrayDeque<>();
@@ -119,6 +134,7 @@ public class OverlayService extends Service {
     private AudioFocusRequest audioFocusRequest;
     private WindowManager.LayoutParams windowParams;
     private OverlayLayout overlayView;
+    private GradientDrawable overlayBackground;
     private TextView textView;
     private TextView statusView;
     private ProgressBar progressBar;
@@ -143,11 +159,28 @@ public class OverlayService extends Service {
     private int pendingSeekMs = -1;
     private int volumePercent = 100;
     private int contentGeneration;
+    private int backgroundColor = DEFAULT_BACKGROUND_COLOR;
+    private int backgroundOpacity = DEFAULT_BACKGROUND_OPACITY;
+    private int textColor = DEFAULT_TEXT_COLOR;
+    private int statusColor = DEFAULT_STATUS_COLOR;
+    private int borderColor = DEFAULT_BORDER_COLOR;
+    private int buttonColor = DEFAULT_BUTTON_COLOR;
+    private int buttonTextColor = DEFAULT_BUTTON_TEXT_COLOR;
+    private int opacity = 100;
+    private int textSizeSp = DEFAULT_TEXT_SIZE_SP;
+    private int cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
+    private int borderWidthDp = DEFAULT_BORDER_WIDTH_DP;
+    private int paddingDp = DEFAULT_PADDING_DP;
+    private int elevationDp = DEFAULT_ELEVATION_DP;
+    private String textAlign = "start";
     private boolean autoplay;
     private boolean javascriptEnabled;
     private boolean focusable;
     private boolean mediaPrepared;
     private boolean overlayAttached;
+    private boolean draggable = true;
+    private boolean touchable = true;
+    private boolean showStatus = true;
     private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener = change -> {
         if ((change == AudioManager.AUDIOFOCUS_LOSS ||
                 change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
@@ -198,7 +231,7 @@ public class OverlayService extends Service {
         startForeground(NOTIFICATION_ID, createNotification());
         clearEvents();
         snapshot = new Snapshot(true, false, "", 0, 0, 0, 0, 0, -1, 0, 0,
-            "none", "", "none", 0, 0, 100, false, false);
+            "none", "", "none", 0, 0, 100, false, false, StyleSnapshot.defaults());
     }
 
     @Override
@@ -224,6 +257,17 @@ public class OverlayService extends Service {
                 case ACTION_UPDATE:
                     requireOverlayView();
                     applyUpdates(intent);
+                    break;
+                case ACTION_STYLE:
+                    requireOverlayView();
+                    applyStyle(intent);
+                    windowManager.updateViewLayout(overlayView, windowParams);
+                    publishSnapshot();
+                    break;
+                case ACTION_RESET_STYLE:
+                case "reset-style":
+                    requireOverlayView();
+                    resetStyle();
                     break;
                 case ACTION_HIDE:
                     setOverlayVisible(false);
@@ -312,9 +356,7 @@ public class OverlayService extends Service {
         if (intent.hasExtra("width")) windowParams.width = intent.getIntExtra("width", 1);
         if (intent.hasExtra("height")) windowParams.height = intent.getIntExtra("height", 1);
         if (intent.hasExtra("progress")) updateProgress(intent.getIntExtra("progress", -1));
-        if (intent.hasExtra("focusable")) {
-            setWindowFocusable(intent.getBooleanExtra("focusable", false));
-        }
+        applyStyle(intent);
         if (intent.hasExtra("buttons")) {
             updateButtons(intent.getStringExtra("buttons"), !intent.hasExtra("height"));
         }
@@ -344,19 +386,12 @@ public class OverlayService extends Service {
         overlayView = new OverlayLayout(this);
         overlayView.setOrientation(LinearLayout.VERTICAL);
         overlayView.setGravity(Gravity.CENTER_VERTICAL);
-        overlayView.setPadding(dpToPixels(16), dpToPixels(10), dpToPixels(16), dpToPixels(10));
-        overlayView.setElevation(dpToPixels(8));
         overlayView.setContentDescription(getString(R.string.overlay_content_description));
 
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.argb(235, 32, 33, 36));
-        background.setCornerRadius(dpToPixels(12));
-        background.setStroke(dpToPixels(1), Color.argb(220, 120, 170, 255));
-        overlayView.setBackground(background);
+        overlayBackground = new GradientDrawable();
+        overlayView.setBackground(overlayBackground);
 
         textView = new TextView(this);
-        textView.setTextColor(Color.WHITE);
-        textView.setTextSize(16);
         textView.setMaxLines(4);
         overlayView.addView(textView, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -390,16 +425,148 @@ public class OverlayService extends Service {
             LinearLayout.LayoutParams.WRAP_CONTENT));
 
         statusView = new TextView(this);
-        statusView.setTextColor(Color.LTGRAY);
         statusView.setTextSize(12);
         statusView.setText(R.string.overlay_drag_hint);
         overlayView.addView(statusView, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT));
 
+        applyStyleToViews();
         configureInputHandling();
         windowManager.addView(overlayView, windowParams);
         overlayAttached = true;
+    }
+
+    private void applyStyle(Intent intent) {
+        boolean nextTouchable = intent.hasExtra("touchable")
+            ? intent.getBooleanExtra("touchable", true) : touchable;
+        if (!nextTouchable && intent.hasExtra("focusable") &&
+                intent.getBooleanExtra("focusable", false)) {
+            throw new IllegalStateException("Focusable overlay must also be touchable");
+        }
+        if (intent.hasExtra("background_color")) {
+            int parsed = Color.parseColor(intent.getStringExtra("background_color"));
+            backgroundColor = parsed | 0xFF000000;
+            backgroundOpacity = Math.round(Color.alpha(parsed) * 100f / 255f);
+        }
+        if (intent.hasExtra("background_opacity")) {
+            backgroundOpacity = intent.getIntExtra("background_opacity", DEFAULT_BACKGROUND_OPACITY);
+        }
+        if (intent.hasExtra("text_color")) {
+            textColor = Color.parseColor(intent.getStringExtra("text_color"));
+        }
+        if (intent.hasExtra("status_color")) {
+            statusColor = Color.parseColor(intent.getStringExtra("status_color"));
+        }
+        if (intent.hasExtra("border_color")) {
+            borderColor = Color.parseColor(intent.getStringExtra("border_color"));
+        }
+        if (intent.hasExtra("button_color")) {
+            buttonColor = Color.parseColor(intent.getStringExtra("button_color"));
+        }
+        if (intent.hasExtra("button_text_color")) {
+            buttonTextColor = Color.parseColor(intent.getStringExtra("button_text_color"));
+        }
+        if (intent.hasExtra("opacity")) opacity = intent.getIntExtra("opacity", 100);
+        if (intent.hasExtra("text_size")) {
+            textSizeSp = intent.getIntExtra("text_size", DEFAULT_TEXT_SIZE_SP);
+        }
+        if (intent.hasExtra("corner_radius")) {
+            cornerRadiusDp = intent.getIntExtra("corner_radius", DEFAULT_CORNER_RADIUS_DP);
+        }
+        if (intent.hasExtra("border_width")) {
+            borderWidthDp = intent.getIntExtra("border_width", DEFAULT_BORDER_WIDTH_DP);
+        }
+        if (intent.hasExtra("padding")) {
+            paddingDp = intent.getIntExtra("padding", DEFAULT_PADDING_DP);
+        }
+        if (intent.hasExtra("elevation")) {
+            elevationDp = intent.getIntExtra("elevation", DEFAULT_ELEVATION_DP);
+        }
+        if (intent.hasExtra("text_align")) textAlign = intent.getStringExtra("text_align");
+        if (intent.hasExtra("draggable")) {
+            draggable = intent.getBooleanExtra("draggable", true);
+        }
+        if (intent.hasExtra("show_status")) {
+            showStatus = intent.getBooleanExtra("show_status", true);
+        }
+        if (intent.hasExtra("touchable")) {
+            setWindowTouchable(intent.getBooleanExtra("touchable", true));
+        }
+        if (intent.hasExtra("focusable")) {
+            setWindowFocusable(intent.getBooleanExtra("focusable", false));
+        }
+        applyStyleToViews();
+    }
+
+    private void applyStyleToViews() {
+        if (overlayBackground != null) {
+            int alpha = Math.round(backgroundOpacity * 255f / 100f);
+            int effectiveBackground = Color.argb(alpha, Color.red(backgroundColor),
+                Color.green(backgroundColor), Color.blue(backgroundColor));
+            overlayBackground.setColor(effectiveBackground);
+            overlayBackground.setCornerRadius(dpToPixels(cornerRadiusDp));
+            overlayBackground.setStroke(dpToPixels(borderWidthDp), borderColor);
+        }
+        if (overlayView != null) {
+            int padding = dpToPixels(paddingDp);
+            overlayView.setPadding(padding, padding, padding, padding);
+            overlayView.setElevation(dpToPixels(elevationDp));
+        }
+        if (windowParams != null) windowParams.alpha = opacity / 100f;
+        if (textView != null) {
+            textView.setTextColor(textColor);
+            textView.setTextSize(textSizeSp);
+            textView.setGravity(resolveTextGravity(textAlign));
+        }
+        if (statusView != null) {
+            statusView.setTextColor(statusColor);
+            statusView.setVisibility(showStatus ? View.VISIBLE : View.GONE);
+        }
+        if (progressBar != null) {
+            progressBar.setProgressTintList(ColorStateList.valueOf(borderColor));
+        }
+        if (buttonRow != null) {
+            for (int i = 0; i < buttonRow.getChildCount(); i++) {
+                View child = buttonRow.getChildAt(i);
+                if (child instanceof Button) applyButtonStyle((Button) child);
+            }
+        }
+    }
+
+    private void applyButtonStyle(Button button) {
+        button.setBackgroundTintList(ColorStateList.valueOf(buttonColor));
+        button.setTextColor(buttonTextColor);
+    }
+
+    private int resolveTextGravity(String alignment) {
+        if ("center".equals(alignment)) return Gravity.CENTER_HORIZONTAL;
+        if ("end".equals(alignment)) return Gravity.END;
+        return Gravity.START;
+    }
+
+    private void resetStyle() {
+        backgroundColor = DEFAULT_BACKGROUND_COLOR;
+        backgroundOpacity = DEFAULT_BACKGROUND_OPACITY;
+        textColor = DEFAULT_TEXT_COLOR;
+        statusColor = DEFAULT_STATUS_COLOR;
+        borderColor = DEFAULT_BORDER_COLOR;
+        buttonColor = DEFAULT_BUTTON_COLOR;
+        buttonTextColor = DEFAULT_BUTTON_TEXT_COLOR;
+        opacity = 100;
+        textSizeSp = DEFAULT_TEXT_SIZE_SP;
+        cornerRadiusDp = DEFAULT_CORNER_RADIUS_DP;
+        borderWidthDp = DEFAULT_BORDER_WIDTH_DP;
+        paddingDp = DEFAULT_PADDING_DP;
+        elevationDp = DEFAULT_ELEVATION_DP;
+        textAlign = "start";
+        draggable = true;
+        showStatus = true;
+        setWindowTouchable(true);
+        setWindowFocusable(false);
+        applyStyleToViews();
+        windowManager.updateViewLayout(overlayView, windowParams);
+        publishSnapshot();
     }
 
     private void configureInputHandling() {
@@ -434,7 +601,7 @@ public class OverlayService extends Service {
                         if (!dragging && (Math.abs(deltaX) > touchSlop || Math.abs(deltaY) > touchSlop)) {
                             dragging = true;
                         }
-                        if (dragging) {
+                        if (dragging && draggable) {
                             windowParams.x = downWindowX + Math.round(deltaX);
                             windowParams.y = downWindowY + Math.round(deltaY);
                             clampPosition();
@@ -445,7 +612,7 @@ public class OverlayService extends Service {
                     case MotionEvent.ACTION_UP:
                         if (!dragging) {
                             view.performClick();
-                        } else {
+                        } else if (draggable) {
                             enqueueEvent("move", "overlay", windowParams.x, windowParams.y);
                             publishSnapshot();
                         }
@@ -513,6 +680,7 @@ public class OverlayService extends Service {
                 Button button = new Button(this);
                 button.setAllCaps(false);
                 button.setText(label);
+                applyButtonStyle(button);
                 button.setContentDescription(label);
                 button.setOnClickListener(view -> {
                     enqueueEvent("button", id, windowParams.x, windowParams.y);
@@ -859,11 +1027,27 @@ public class OverlayService extends Service {
     }
 
     private void setWindowFocusable(boolean enabled) {
+        if (enabled && !touchable) {
+            throw new IllegalStateException("Focusable overlay must also be touchable");
+        }
         focusable = enabled;
         if (windowParams == null) return;
         if (enabled) {
             windowParams.flags &= ~WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         } else {
+            windowParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        }
+        if (overlayAttached) windowManager.updateViewLayout(overlayView, windowParams);
+    }
+
+    private void setWindowTouchable(boolean enabled) {
+        touchable = enabled;
+        if (windowParams == null) return;
+        if (enabled) {
+            windowParams.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        } else {
+            windowParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+            focusable = false;
             windowParams.flags |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
         }
         if (overlayAttached) windowManager.updateViewLayout(overlayView, windowParams);
@@ -992,7 +1176,8 @@ public class OverlayService extends Service {
                 durationMs,
                 volumePercent,
                 javascriptEnabled,
-                focusable);
+                focusable,
+                createStyleSnapshot());
         }
     }
 
@@ -1030,7 +1215,8 @@ public class OverlayService extends Service {
             current.durationMs,
             current.volume,
             current.javascriptEnabled,
-            current.focusable);
+            current.focusable,
+            current.style);
     }
 
     private void sendResult(Intent intent, @Nullable String error) {
@@ -1092,6 +1278,7 @@ public class OverlayService extends Service {
             }
         }
         overlayView = null;
+        overlayBackground = null;
         overlayAttached = false;
         textView = null;
         statusView = null;
@@ -1153,12 +1340,13 @@ public class OverlayService extends Service {
         public final int volume;
         public final boolean javascriptEnabled;
         public final boolean focusable;
+        public final StyleSnapshot style;
 
         Snapshot(boolean running, boolean visible, String text, int x, int y,
                 int width, int height, int tapCount, int progress, int buttonCount,
                 int eventCount, String contentType, String contentSource,
                 String playbackState, int positionMs, int durationMs, int volume,
-                boolean javascriptEnabled, boolean focusable) {
+                boolean javascriptEnabled, boolean focusable, StyleSnapshot style) {
             this.running = running;
             this.visible = visible;
             this.text = text;
@@ -1178,11 +1366,70 @@ public class OverlayService extends Service {
             this.volume = volume;
             this.javascriptEnabled = javascriptEnabled;
             this.focusable = focusable;
+            this.style = style;
         }
 
         static Snapshot stopped() {
             return new Snapshot(false, false, "", 0, 0, 0, 0, 0, -1, 0,
-                getEventCount(), "none", "", "none", 0, 0, 100, false, false);
+                getEventCount(), "none", "", "none", 0, 0, 100, false, false,
+                StyleSnapshot.defaults());
+        }
+    }
+
+    private StyleSnapshot createStyleSnapshot() {
+        return new StyleSnapshot(backgroundColor, backgroundOpacity, textColor, statusColor,
+            borderColor, buttonColor, buttonTextColor, opacity, textSizeSp, cornerRadiusDp,
+            borderWidthDp, paddingDp, elevationDp, textAlign, draggable, touchable, showStatus);
+    }
+
+    public static final class StyleSnapshot {
+        public final int backgroundColor;
+        public final int backgroundOpacity;
+        public final int textColor;
+        public final int statusColor;
+        public final int borderColor;
+        public final int buttonColor;
+        public final int buttonTextColor;
+        public final int opacity;
+        public final int textSize;
+        public final int cornerRadius;
+        public final int borderWidth;
+        public final int padding;
+        public final int elevation;
+        public final String textAlign;
+        public final boolean draggable;
+        public final boolean touchable;
+        public final boolean showStatus;
+
+        StyleSnapshot(int backgroundColor, int backgroundOpacity, int textColor,
+                int statusColor, int borderColor, int buttonColor, int buttonTextColor,
+                int opacity, int textSize, int cornerRadius, int borderWidth, int padding, int elevation,
+                String textAlign, boolean draggable, boolean touchable, boolean showStatus) {
+            this.backgroundColor = backgroundColor;
+            this.backgroundOpacity = backgroundOpacity;
+            this.textColor = textColor;
+            this.statusColor = statusColor;
+            this.borderColor = borderColor;
+            this.buttonColor = buttonColor;
+            this.buttonTextColor = buttonTextColor;
+            this.opacity = opacity;
+            this.textSize = textSize;
+            this.cornerRadius = cornerRadius;
+            this.borderWidth = borderWidth;
+            this.padding = padding;
+            this.elevation = elevation;
+            this.textAlign = textAlign;
+            this.draggable = draggable;
+            this.touchable = touchable;
+            this.showStatus = showStatus;
+        }
+
+        static StyleSnapshot defaults() {
+            return new StyleSnapshot(DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_OPACITY,
+                DEFAULT_TEXT_COLOR, DEFAULT_STATUS_COLOR, DEFAULT_BORDER_COLOR,
+                DEFAULT_BUTTON_COLOR, DEFAULT_BUTTON_TEXT_COLOR, 100,
+                DEFAULT_TEXT_SIZE_SP, DEFAULT_CORNER_RADIUS_DP, DEFAULT_BORDER_WIDTH_DP,
+                DEFAULT_PADDING_DP, DEFAULT_ELEVATION_DP, "start", true, true, true);
         }
     }
 

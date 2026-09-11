@@ -39,6 +39,10 @@ public class OverlayAPI {
     private static final int MAX_BUTTON_LABEL_LENGTH = 48;
     private static final int MAX_SOURCE_LENGTH = 4_096;
     private static final long MAX_IMAGE_FILE_BYTES = 25L * 1024 * 1024;
+    private static final String[] COLOR_PARAMETERS = {
+        "background_color", "text_color", "status_color", "border_color", "button_color",
+        "button_text_color"
+    };
 
     public static void onReceive(TermuxApiReceiver receiver, Context context, Intent intent) {
         Logger.logDebug(LOG_TAG, "onReceive");
@@ -96,6 +100,14 @@ public class OverlayAPI {
             case OverlayService.ACTION_UPDATE:
                 requireRunningService();
                 validateOptionalParameters(source);
+                break;
+            case OverlayService.ACTION_STYLE:
+                requireRunningService();
+                validateOptionalStyle(source);
+                break;
+            case OverlayService.ACTION_RESET_STYLE:
+            case "reset-style":
+                requireRunningService();
                 break;
             case OverlayService.ACTION_CONTENT:
                 requireRunningService();
@@ -175,6 +187,23 @@ public class OverlayAPI {
         copyExtra(source, serviceIntent, "focusable");
         copyExtra(source, serviceIntent, "position_ms");
         copyExtra(source, serviceIntent, "volume");
+        copyExtra(source, serviceIntent, "background_color");
+        copyExtra(source, serviceIntent, "background_opacity");
+        copyExtra(source, serviceIntent, "text_color");
+        copyExtra(source, serviceIntent, "status_color");
+        copyExtra(source, serviceIntent, "border_color");
+        copyExtra(source, serviceIntent, "button_color");
+        copyExtra(source, serviceIntent, "button_text_color");
+        copyExtra(source, serviceIntent, "opacity");
+        copyExtra(source, serviceIntent, "text_size");
+        copyExtra(source, serviceIntent, "corner_radius");
+        copyExtra(source, serviceIntent, "border_width");
+        copyExtra(source, serviceIntent, "padding");
+        copyExtra(source, serviceIntent, "elevation");
+        copyExtra(source, serviceIntent, "text_align");
+        copyExtra(source, serviceIntent, "draggable");
+        copyExtra(source, serviceIntent, "touchable");
+        copyExtra(source, serviceIntent, "show_status");
 
         try {
             if (!OverlayService.isRunning() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -219,6 +248,58 @@ public class OverlayAPI {
         validateOptionalProgress(intent);
         validateOptionalButtons(intent);
         validateOptionalBoolean(intent, "focusable");
+        validateOptionalStyle(intent);
+    }
+
+    private static void validateOptionalStyle(Intent intent) throws OverlayApiException {
+        for (String name : COLOR_PARAMETERS) validateOptionalColor(intent, name);
+        validateOptionalRange(intent, "background_opacity", 0, 100);
+        validateOptionalRange(intent, "opacity", 1, 100);
+        validateOptionalRange(intent, "text_size", 8, 72);
+        validateOptionalRange(intent, "corner_radius", 0, 100);
+        validateOptionalRange(intent, "border_width", 0, 16);
+        validateOptionalRange(intent, "padding", 0, 64);
+        validateOptionalRange(intent, "elevation", 0, 32);
+        validateOptionalBoolean(intent, "draggable");
+        validateOptionalBoolean(intent, "touchable");
+        validateOptionalBoolean(intent, "show_status");
+        validateOptionalBoolean(intent, "focusable");
+
+        if (intent.hasExtra("text_align")) {
+            String rawAlignment = intent.getStringExtra("text_align");
+            String alignment = rawAlignment == null ? "" :
+                rawAlignment.trim().toLowerCase(Locale.ROOT);
+            if (!(alignment.equals("start") ||
+                    alignment.equals("center") || alignment.equals("end"))) {
+                throw new OverlayApiException("'text_align' must be start, center, or end");
+            }
+            intent.putExtra("text_align", alignment);
+        }
+        if (intent.hasExtra("touchable") && intent.hasExtra("focusable") &&
+                !getOptionalBooleanExtra(intent, "touchable", true) &&
+                getOptionalBooleanExtra(intent, "focusable", false)) {
+            throw new OverlayApiException("'focusable' cannot be true when 'touchable' is false");
+        }
+    }
+
+    private static void validateOptionalColor(Intent intent, String name)
+            throws OverlayApiException {
+        if (!intent.hasExtra(name)) return;
+        String value = intent.getStringExtra(name);
+        if (value == null || !value.matches("^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")) {
+            throw new OverlayApiException(
+                "'" + name + "' must use #RRGGBB or #AARRGGBB format");
+        }
+    }
+
+    private static void validateOptionalRange(Intent intent, String name, int min, int max)
+            throws OverlayApiException {
+        if (!intent.hasExtra(name)) return;
+        int value = getIntExtra(intent, name);
+        if (value < min || value > max) {
+            throw new OverlayApiException(
+                "'" + name + "' must be between " + min + " and " + max);
+        }
     }
 
     private static void validateOptionalCoordinate(Intent intent, String name)
@@ -445,6 +526,34 @@ public class OverlayAPI {
         out.name("volume").value(snapshot.volume);
         out.name("javascript_enabled").value(snapshot.javascriptEnabled);
         out.name("focusable").value(snapshot.focusable);
+        writeStyle(out, snapshot.style);
+    }
+
+    private static void writeStyle(JsonWriter out, OverlayService.StyleSnapshot style)
+            throws Exception {
+        out.name("style").beginObject();
+        out.name("background_color").value(colorToHex(style.backgroundColor));
+        out.name("background_opacity").value(style.backgroundOpacity);
+        out.name("text_color").value(colorToHex(style.textColor));
+        out.name("status_color").value(colorToHex(style.statusColor));
+        out.name("border_color").value(colorToHex(style.borderColor));
+        out.name("button_color").value(colorToHex(style.buttonColor));
+        out.name("button_text_color").value(colorToHex(style.buttonTextColor));
+        out.name("opacity").value(style.opacity);
+        out.name("text_size").value(style.textSize);
+        out.name("corner_radius").value(style.cornerRadius);
+        out.name("border_width").value(style.borderWidth);
+        out.name("padding").value(style.padding);
+        out.name("elevation").value(style.elevation);
+        out.name("text_align").value(style.textAlign);
+        out.name("draggable").value(style.draggable);
+        out.name("touchable").value(style.touchable);
+        out.name("show_status").value(style.showStatus);
+        out.endObject();
+    }
+
+    private static String colorToHex(int color) {
+        return String.format(Locale.ROOT, "#%08X", color);
     }
 
     private static void writeEvents(JsonWriter out, List<OverlayService.OverlayEvent> events)

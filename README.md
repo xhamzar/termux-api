@@ -73,6 +73,17 @@ OVERLAY_API="$PREFIX/libexec/termux-api"
 "$OVERLAY_API" Overlay --es action update --es text "Deploying" --ei progress 35 \
   --es buttons '[{"id":"cancel","label":"Cancel"},{"id":"details","label":"Details"}]'
 
+# Customize colors, transparency, shape, and text. Colors use #RRGGBB or #AARRGGBB.
+"$OVERLAY_API" Overlay --es action style --es background_color '#101820' \
+  --ei background_opacity 65 --es text_color '#00FF88' --es border_color '#00FF88' \
+  --es button_color '#355070' --es button_text_color '#FFFFFF' \
+  --ei text_size 18 --ei corner_radius 20 --es text_align center --ez show_status false
+
+# Create a transparent, click-through HUD; reset_style restores all defaults.
+"$OVERLAY_API" Overlay --es action style --ei background_opacity 0 \
+  --ei border_width 0 --ez touchable false --ez draggable false
+"$OVERLAY_API" Overlay --es action reset_style
+
 # Read queued tap/button/move events. Events are removed after reading by default.
 "$OVERLAY_API" Overlay --es action events
 "$OVERLAY_API" Overlay --es action events --ez clear false
