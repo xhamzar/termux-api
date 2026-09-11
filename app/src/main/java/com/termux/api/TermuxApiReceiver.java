@@ -14,6 +14,7 @@ import com.termux.api.apis.BrightnessAPI;
 import com.termux.api.apis.CallLogAPI;
 import com.termux.api.apis.CameraInfoAPI;
 import com.termux.api.apis.CameraPhotoAPI;
+import com.termux.api.apis.CameraProviderAPI;
 import com.termux.api.apis.ClipboardAPI;
 import com.termux.api.apis.ContactListAPI;
 import com.termux.api.apis.DialogAPI;
@@ -114,6 +115,13 @@ public class TermuxApiReceiver extends BroadcastReceiver {
             case "CameraPhoto":
                 if (TermuxApiPermissionActivity.checkAndRequestPermissions(context, intent, Manifest.permission.CAMERA)) {
                     CameraPhotoAPI.onReceive(this, context, intent);
+                }
+                break;
+            case "Camera":
+                if (!CameraProviderAPI.requiresCameraPermission(intent) ||
+                        TermuxApiPermissionActivity.checkAndRequestPermissions(
+                            context, intent, Manifest.permission.CAMERA)) {
+                    CameraProviderAPI.onReceive(this, context, intent);
                 }
                 break;
             case "CallLog":

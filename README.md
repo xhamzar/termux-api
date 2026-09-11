@@ -50,6 +50,17 @@ Client scripts which processes command line arguments before calling the
 Panduan penggunaan dari nol untuk Touch API dan Floating Overlay tersedia di
 [docs/TOUCH_AND_OVERLAY_API.md](docs/TOUCH_AND_OVERLAY_API.md).
 
+## Universal camera provider
+
+The new `Camera` API supports one-shot JPEG photos, video-only H.264/MP4 recording, and realtime
+JPEG, PNG, RGB24, or I420 streams. Streams can be sent to stdout, numbered files, a loopback TCP
+server, or a multi-client abstract Unix socket. A small latest-frame buffer drops stale frames when
+a consumer is slow.
+
+A reference `termux-camera` command is available in [`scripts/termux-camera`](scripts/termux-camera).
+See [the complete Camera Provider guide](docs/CAMERA_PROVIDER_API.md) for installation, all options,
+the framed binary protocol, filesystem Unix socket proxy, and Python/OpenCV/AI examples.
+
 ## Floating overlay API
 
 The `Overlay` API displays a movable, tappable status panel over other apps. It uses the existing

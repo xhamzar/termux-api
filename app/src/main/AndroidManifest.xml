@@ -35,6 +35,7 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.DUMP" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
@@ -211,6 +212,13 @@
 
         <service android:name=".apis.UsbAPI$UsbService"
             android:exported="false" />
+
+        <service
+            android:name=".apis.CameraProviderService"
+            android:description="@string/camera_provider_service_description"
+            android:exported="false"
+            android:foregroundServiceType="camera"
+            android:stopWithTask="true" />
 
         <service
             android:name=".apis.OverlayService"

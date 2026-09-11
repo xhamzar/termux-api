@@ -1,0 +1,209 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+SCRIPT_NAME=termux-camera
+API_HELPER=${TERMUX_CAMERA_API_HELPER:-"${PREFIX:-/data/data/com.termux/files/usr}/libexec/termux-api"}
+PROXY_STATE=${TMPDIR:-/data/data/com.termux/files/usr/tmp}/termux-camera-proxy.state
+
+usage() {
+    cat <<'EOF'
+Usage:
+  termux-camera info [options]
+  termux-camera photo [options]
+  termux-camera record [options]
+  termux-camera stream [options]
+  termux-camera status
+  termux-camera stop
+
+Capture options:
+  --camera ID          Camera2 id (default: 0)
+  --width PIXELS       Requested width (default: 1280)
+  --height PIXELS      Requested height (default: 720)
+  --fps FPS            Requested frame rate (default: 30)
+  --format FORMAT      jpeg, png, rgb, or yuv420 (default: jpeg)
+
+Output options:
+  --file PATH          Photo JPEG or recording MP4 destination
+  --output LIST        pipe,file,tcp,unix (comma separated; default: pipe)
+  --directory PATH     File-stream frame directory
+  --port PORT          Loopback TCP port (default: 9000)
+  --socket-name NAME   Android abstract Unix socket name
+  --socket PATH        Filesystem Unix socket via a socat TCP proxy
+  --protocol NAME      framed or mjpeg
+  --quality 1..100     JPEG quality (default: 85)
+  --bitrate BPS        H.264 recording bitrate (default: 8000000)
+
+Examples:
+  termux-camera photo
+  termux-camera record --file ~/camera/video.mp4
+  termux-camera stream --camera 0 --fps 30 --format jpeg | program
+  termux-camera stream --output tcp --protocol mjpeg --port 9000
+  termux-camera stream --socket ~/camera.sock --protocol framed
+EOF
+}
+
+fail() {
+    echo "$SCRIPT_NAME: $*" >&2
+    exit 1
+}
+
+contains_output() {
+    case ",$output," in
+        *",$1,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+stop_proxy() {
+    [ -f "$PROXY_STATE" ] || return 0
+    proxy_pid=$(sed -n '1p' "$PROXY_STATE")
+    proxy_socket=$(sed -n '2p' "$PROXY_STATE")
+    if [ -n "$proxy_pid" ] && [ -r "/proc/$proxy_pid/cmdline" ]; then
+        proxy_command=$(tr '\000' ' ' < "/proc/$proxy_pid/cmdline")
+        case "$proxy_command" in
+            *socat*"$proxy_socket"*) kill "$proxy_pid" 2>/dev/null || true ;;
+        esac
+    fi
+    if [ -n "$proxy_socket" ] && [ -S "$proxy_socket" ]; then
+        rm -f -- "$proxy_socket"
+    fi
+    rm -f -- "$PROXY_STATE"
+}
+
+[ "$#" -gt 0 ] || { usage; exit 1; }
+command=$1
+shift
+
+camera=0
+camera_set=false
+width=1280
+height=720
+fps=30
+format=jpeg
+file=
+output=pipe
+output_set=false
+directory=
+port=9000
+socket_name=termux.camera.frames
+socket_path=
+protocol=framed
+protocol_set=false
+quality=85
+bitrate=8000000
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --camera|--width|--height|--fps|--format|--file|--output|--directory|--port|--socket-name|--socket|--protocol|--quality|--bitrate)
+            [ "$#" -ge 2 ] || fail "missing value for $1"
+            option=$1
+            value=$2
+            shift 2
+            case "$option" in
+                --camera) camera=$value; camera_set=true ;;
+                --width) width=$value ;;
+                --height) height=$value ;;
+                --fps) fps=$value ;;
+                --format) format=$value ;;
+                --file) file=$value ;;
+                --output) output=$value; output_set=true ;;
+                --directory) directory=$value ;;
+                --port) port=$value ;;
+                --socket-name) socket_name=$value ;;
+                --socket) socket_path=$value ;;
+                --protocol) protocol=$value; protocol_set=true ;;
+                --quality) quality=$value ;;
+                --bitrate) bitrate=$value ;;
+            esac
+            ;;
+        -h|--help) usage; exit 0 ;;
+        *) fail "unknown option: $1" ;;
+    esac
+done
+
+case "$command" in
+    info)
+        if [ "$camera_set" = true ]; then
+            exec "$API_HELPER" Camera --es action info --es camera "$camera" \
+                --ei width "$width" --ei height "$height" --ei fps "$fps" --es format "$format"
+        fi
+        exec "$API_HELPER" Camera --es action info \
+            --ei width "$width" --ei height "$height" --ei fps "$fps" --es format "$format"
+        ;;
+    photo)
+        [ "$format" = jpeg ] || fail "photo mode currently supports jpeg only"
+        if [ -z "$file" ]; then
+            mkdir -p "$HOME/camera"
+            file="$HOME/camera/photo_$(date +%Y%m%d_%H%M%S).jpg"
+        fi
+        file=$(realpath -m "$file")
+        [ ! -e "$file" ] || fail "output already exists: $file"
+        exec "$API_HELPER" Camera --es action photo --es camera "$camera" \
+            --es format jpeg --es file "$file"
+        ;;
+    record)
+        if [ -z "$file" ]; then
+            mkdir -p "$HOME/camera"
+            file="$HOME/camera/video_$(date +%Y%m%d_%H%M%S).mp4"
+        fi
+        file=$(realpath -m "$file")
+        [ ! -e "$file" ] || fail "output already exists: $file"
+        exec "$API_HELPER" Camera --es action record --es camera "$camera" \
+            --ei width "$width" --ei height "$height" --ei fps "$fps" \
+            --ei bitrate "$bitrate" --es file "$file"
+        ;;
+    stream)
+        if contains_output file; then
+            if [ -z "$directory" ]; then directory="$HOME/camera/frames"; fi
+            mkdir -p "$directory"
+            directory=$(realpath "$directory")
+        fi
+        if [ -n "$socket_path" ]; then
+            command -v socat >/dev/null 2>&1 || fail "--socket requires: pkg install socat"
+            socket_path=$(realpath -m "$socket_path")
+            [ ! -e "$socket_path" ] || fail "socket path already exists: $socket_path"
+            if [ "$output_set" = false ]; then
+                output=tcp
+            elif ! contains_output tcp; then
+                output="$output,tcp"
+            fi
+        fi
+        if [ "$protocol_set" = false ] && contains_output tcp && [ "$format" = jpeg ]; then
+            protocol=mjpeg
+        fi
+        if contains_output pipe; then
+            exec "$API_HELPER" Camera --es action stream --es camera "$camera" \
+                --ei width "$width" --ei height "$height" --ei fps "$fps" \
+                --es format "$format" --es output "$output" --es directory "$directory" \
+                --ei port "$port" --es socket_name "$socket_name" --es protocol "$protocol" \
+                --ei quality "$quality"
+        fi
+        result=$("$API_HELPER" Camera --es action stream --es camera "$camera" \
+            --ei width "$width" --ei height "$height" --ei fps "$fps" \
+            --es format "$format" --es output "$output" --es directory "$directory" \
+            --ei port "$port" --es socket_name "$socket_name" --es protocol "$protocol" \
+            --ei quality "$quality")
+        printf '%s\n' "$result"
+        if [ -n "$socket_path" ] && printf '%s' "$result" | grep -q '"success": true'; then
+            stop_proxy
+            socat "UNIX-LISTEN:$socket_path,fork" "TCP:127.0.0.1:$port" \
+                >/dev/null 2>&1 &
+            proxy_pid=$!
+            printf '%s\n%s\n' "$proxy_pid" "$socket_path" > "$PROXY_STATE"
+            echo "$SCRIPT_NAME: Unix socket proxy listening at $socket_path" >&2
+        fi
+        ;;
+    status)
+        exec "$API_HELPER" Camera --es action status
+        ;;
+    stop|record-stop)
+        stop_proxy
+        exec "$API_HELPER" Camera --es action stop
+        ;;
+    help)
+        usage
+        ;;
+    *)
+        fail "unknown mode: $command"
+        ;;
+esac
