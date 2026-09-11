@@ -1,0 +1,162 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+
+SCRIPT_NAME=termux-overlay
+API_HELPER=${TERMUX_OVERLAY_API_HELPER:-"${PREFIX:-/data/data/com.termux/files/usr}/libexec/termux-api"}
+
+usage() {
+    cat <<'EOF'
+Usage:
+  termux-overlay camera start [--socket NAME] [--x PX --y PX] [--width PX --height PX]
+  termux-overlay camera stop
+  termux-overlay camera status
+  termux-overlay camera resize --width PX --height PX
+  termux-overlay camera position --x PX --y PX
+  termux-overlay draw text --text TEXT --x PX --y PX [--color '#RRGGBB'] [--text-size SP]
+  termux-overlay draw box --x PX --y PX --width PX --height PX [options]
+  termux-overlay draw clear
+  termux-overlay permission|status|start|stop
+
+Box options:
+  --label TEXT          Object label (default: Object)
+  --confidence 0..100  Detection confidence percentage
+  --color COLOR        #RRGGBB or #AARRGGBB (default: #00FF00)
+  --stroke-width DP    Border width (default: 2)
+
+Drawing coordinates use source-camera pixels and are scaled with the preview.
+The camera client reads TCAM framed JPEG, PNG, RGB24, and I420 streams.
+EOF
+}
+
+fail() {
+    echo "$SCRIPT_NAME: $*" >&2
+    exit 1
+}
+
+need_value() {
+    [ "$#" -ge 2 ] || fail "missing value for $1"
+}
+
+[ "$#" -gt 0 ] || { usage; exit 1; }
+group=$1
+shift
+
+case "$group" in
+    -h|--help|help) usage; exit 0 ;;
+    permission|status|start|stop)
+        [ "$#" -eq 0 ] || fail "unexpected option: $1"
+        exec "$API_HELPER" Overlay --es action "$group"
+        ;;
+    camera)
+        [ "$#" -gt 0 ] || { usage; exit 1; }
+        action=$1
+        shift
+        case "$action" in
+            -h|--help|help) usage; exit 0 ;;
+            stop|status)
+                [ "$#" -eq 0 ] || fail "unexpected option: $1"
+                exec "$API_HELPER" Overlay --es action "camera_$action"
+                ;;
+            start|resize|position)
+                socket_name=termux.camera.frames
+                x=
+                y=
+                width=
+                height=
+                while [ "$#" -gt 0 ]; do
+                    need_value "$@"
+                    option=$1
+                    value=$2
+                    shift 2
+                    case "$option" in
+                        --socket|--socket-name) socket_name=$value ;;
+                        --x) x=$value ;;
+                        --y) y=$value ;;
+                        --width) width=$value ;;
+                        --height) height=$value ;;
+                        *) fail "unknown camera option: $option" ;;
+                    esac
+                done
+                if [ "$action" = resize ]; then
+                    [ -n "$width" ] && [ -n "$height" ] ||
+                        fail "camera resize requires --width and --height"
+                fi
+                if [ "$action" = position ]; then
+                    [ -n "$x" ] && [ -n "$y" ] ||
+                        fail "camera position requires --x and --y"
+                fi
+                set -- "$API_HELPER" Overlay --es action "camera_$action"
+                if [ "$action" = start ]; then
+                    set -- "$@" --es socket_name "$socket_name"
+                fi
+                if [ -n "$x" ]; then set -- "$@" --ei x "$x"; fi
+                if [ -n "$y" ]; then set -- "$@" --ei y "$y"; fi
+                if [ -n "$width" ]; then set -- "$@" --ei width "$width"; fi
+                if [ -n "$height" ]; then set -- "$@" --ei height "$height"; fi
+                exec "$@"
+                ;;
+            *) fail "unknown camera command: $action" ;;
+        esac
+        ;;
+    draw)
+        [ "$#" -gt 0 ] || { usage; exit 1; }
+        action=$1
+        shift
+        case "$action" in
+            -h|--help|help) usage; exit 0 ;;
+            clear)
+                [ "$#" -eq 0 ] || fail "unexpected option: $1"
+                exec "$API_HELPER" Overlay --es action draw_clear
+                ;;
+            text|box)
+                text=
+                label=Object
+                confidence=
+                color=#00FF00
+                text_size=18
+                stroke_width=2
+                x=
+                y=
+                width=
+                height=
+                while [ "$#" -gt 0 ]; do
+                    need_value "$@"
+                    option=$1
+                    value=$2
+                    shift 2
+                    case "$option" in
+                        --text) text=$value ;;
+                        --label) label=$value ;;
+                        --confidence) confidence=$value ;;
+                        --color) color=$value ;;
+                        --text-size) text_size=$value ;;
+                        --stroke-width) stroke_width=$value ;;
+                        --x) x=$value ;;
+                        --y) y=$value ;;
+                        --width) width=$value ;;
+                        --height) height=$value ;;
+                        *) fail "unknown draw option: $option" ;;
+                    esac
+                done
+                [ -n "$x" ] && [ -n "$y" ] || fail "draw requires --x and --y"
+                set -- "$API_HELPER" Overlay --es action "draw_$action" \
+                    --ei x "$x" --ei y "$y" --es color "$color"
+                if [ "$action" = text ]; then
+                    [ -n "$text" ] || fail "draw text requires --text"
+                    set -- "$@" --es text "$text" --ei text_size "$text_size"
+                else
+                    [ -n "$width" ] && [ -n "$height" ] ||
+                        fail "draw box requires --width and --height"
+                    set -- "$@" --ei width "$width" --ei height "$height" \
+                        --es label "$label" --ei stroke_width "$stroke_width"
+                    if [ -n "$confidence" ]; then
+                        set -- "$@" --ei confidence "$confidence"
+                    fi
+                fi
+                exec "$@"
+                ;;
+            *) fail "unknown draw command: $action" ;;
+        esac
+        ;;
+    *) fail "unknown command: $group" ;;
+esac

@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:sharedUserId="${TERMUX_PACKAGE_NAME}">
-
-
-<uses-permission android:name="android.permission.INJECT_EVENTS" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -37,6 +34,9 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.DUMP" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <!-- This permission is not used, but a permission is needed on the sharedfiles contentprovider,
@@ -212,6 +212,40 @@
 
         <service android:name=".apis.UsbAPI$UsbService"
             android:exported="false" />
+
+        <service
+            android:name=".apis.CameraProviderService"
+            android:description="@string/camera_provider_service_description"
+            android:exported="false"
+            android:foregroundServiceType="camera"
+            android:stopWithTask="true" />
+
+        <service
+            android:name=".apis.OverlayService"
+            android:description="@string/overlay_service_description"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-controlled floating overlay for Termux commands" />
+        </service>
+
+        <service
+            android:name=".apis.TouchAPI$TouchAccessibilityService"
+            android:description="@string/touch_accessibility_service_description"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/touch_accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/touch_accessibility_service" />
+        </service>
 
     </application>
 

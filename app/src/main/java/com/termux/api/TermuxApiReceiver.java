@@ -14,6 +14,7 @@ import com.termux.api.apis.BrightnessAPI;
 import com.termux.api.apis.CallLogAPI;
 import com.termux.api.apis.CameraInfoAPI;
 import com.termux.api.apis.CameraPhotoAPI;
+import com.termux.api.apis.CameraProviderAPI;
 import com.termux.api.apis.ClipboardAPI;
 import com.termux.api.apis.ContactListAPI;
 import com.termux.api.apis.DialogAPI;
@@ -29,6 +30,7 @@ import com.termux.api.apis.MicRecorderAPI;
 import com.termux.api.apis.NfcAPI;
 import com.termux.api.apis.NotificationAPI;
 import com.termux.api.apis.NotificationListAPI;
+import com.termux.api.apis.OverlayAPI;
 import com.termux.api.apis.SAFAPI;
 import com.termux.api.apis.SensorAPI;
 import com.termux.api.apis.ShareAPI;
@@ -39,6 +41,7 @@ import com.termux.api.apis.StorageGetAPI;
 import com.termux.api.apis.TelephonyAPI;
 import com.termux.api.apis.TextToSpeechAPI;
 import com.termux.api.apis.ToastAPI;
+import com.termux.api.apis.TouchAPI;
 import com.termux.api.apis.TorchAPI;
 import com.termux.api.apis.UsbAPI;
 import com.termux.api.apis.VibrateAPI;
@@ -51,7 +54,6 @@ import com.termux.shared.data.IntentUtils;
 import com.termux.shared.logger.Logger;
 import com.termux.shared.termux.TermuxConstants;
 import com.termux.shared.termux.plugins.TermuxPluginUtils;
-import com.termux.api.apis.TouchAPI;
 
 
 public class TermuxApiReceiver extends BroadcastReceiver {
@@ -104,9 +106,8 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                 }
                 BrightnessAPI.onReceive(this, context, intent);
                 break;
-            // Dalam switch statement, tambahkan:
-               case "Touch":
-                    TouchAPI.onReceive(this, context, intent);
+            case "Touch":
+                TouchAPI.onReceive(this, context, intent);
                 break;
             case "CameraInfo":
                 CameraInfoAPI.onReceive(this, context, intent);
@@ -114,6 +115,13 @@ public class TermuxApiReceiver extends BroadcastReceiver {
             case "CameraPhoto":
                 if (TermuxApiPermissionActivity.checkAndRequestPermissions(context, intent, Manifest.permission.CAMERA)) {
                     CameraPhotoAPI.onReceive(this, context, intent);
+                }
+                break;
+            case "Camera":
+                if (!CameraProviderAPI.requiresCameraPermission(intent) ||
+                        TermuxApiPermissionActivity.checkAndRequestPermissions(
+                            context, intent, Manifest.permission.CAMERA)) {
+                    CameraProviderAPI.onReceive(this, context, intent);
                 }
                 break;
             case "CallLog":
@@ -195,6 +203,9 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                 break;
             case "NotificationReply":
                 NotificationAPI.onReceiveReplyToNotification(this, context, intent);
+                break;
+            case "Overlay":
+                OverlayAPI.onReceive(this, context, intent);
                 break;
             case "SAF":
                 SAFAPI.onReceive(this, context, intent);
