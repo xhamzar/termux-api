@@ -47,6 +47,9 @@ class and output from the API class to the stdout of `termux-api`.
 Client scripts which processes command line arguments before calling the
 `termux-api` helper binary are available in the [termux-api package](https://github.com/termux/termux-api-package).
 
+Panduan penggunaan dari nol untuk Touch API dan Floating Overlay tersedia di
+[docs/TOUCH_AND_OVERLAY_API.md](docs/TOUCH_AND_OVERLAY_API.md).
+
 ## Floating overlay API
 
 The `Overlay` API displays a movable, tappable status panel over other apps. It uses the existing
