@@ -2,163 +2,149 @@ package com.termux.api.apis;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
-import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Path;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.JsonWriter;
-import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityEvent;
 
 import com.termux.api.TermuxApiReceiver;
 import com.termux.api.util.ResultReturner;
 import com.termux.shared.logger.Logger;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * TouchAPI - Simulates touch input and gestures for automation
- * 
- * Supports:
- * - Single tap at coordinates
- * - Multi-touch (simultaneous touches)
- * - Swipe/drag gestures
- * - Long press
- * - Macro/sequence of touches with delays
- * 
- * Example commands:
- * - Tap: x=100 y=200
- * - Multi-tap: touches=[{"x":100,"y":200},{"x":300,"y":400}]
- * - Swipe: x1=100 y1=200 x2=300 y2=400 duration=500
- * - Macro: macro=[{"action":"tap","x":100,"y":200},{"action":"wait","delay":500}]
- */
+/** Simulates touch gestures through an accessibility service enabled by the user. */
 public class TouchAPI {
 
     private static final String LOG_TAG = "TouchAPI";
-    private static TouchAccessibilityService touchService = null;
-    private static final Object serviceLock = new Object();
+    private static final long DEFAULT_SWIPE_DURATION = 500;
+    private static final long DEFAULT_LONG_PRESS_DURATION = 1000;
+    private static final long MAX_GESTURE_DURATION = 60_000;
+    private static final long CALLBACK_TIMEOUT_BUFFER = 5_000;
+    private static final int MAX_STROKES = 10;
+
+    private static volatile TouchAccessibilityService touchService;
 
     public static void onReceive(TermuxApiReceiver apiReceiver, final Context context, final Intent intent) {
         Logger.logDebug(LOG_TAG, "onReceive");
 
-        final String action;
-        String intentAction = intent.getStringExtra("action");
-        if (intentAction == null || intentAction.isEmpty()) {
-            action = "tap"; // default action
-        } else {
-            action = intentAction;
-        }
+        String requestedAction = intent.getStringExtra("action");
+        final String action = requestedAction == null || requestedAction.trim().isEmpty()
+            ? "tap" : requestedAction.trim().toLowerCase(Locale.ROOT);
 
         ResultReturner.returnData(apiReceiver, intent, new ResultReturner.ResultJsonWriter() {
             @Override
             public void writeJson(JsonWriter out) throws Exception {
                 out.beginObject();
-                
                 try {
-                    switch (action.toLowerCase()) {
-                        case "tap":
-                            handleTap(context, intent, out);
-                            break;
-                        case "multi_tap":
-                            handleMultiTap(context, intent, out);
-                            break;
-                        case "swipe":
-                            handleSwipe(context, intent, out);
-                            break;
-                        case "long_press":
-                            handleLongPress(context, intent, out);
-                            break;
-                        case "macro":
-                            handleMacro(context, intent, out);
-                            break;
-                        default:
-                            out.name("success").value(false);
-                            out.name("error").value("Unknown action: " + action);
+                    if ("status".equals(action)) {
+                        writeStatus(out);
+                    } else {
+                        requireTouchService();
+                        switch (action) {
+                            case "tap":
+                                handleTap(intent, out);
+                                break;
+                            case "multi_tap":
+                            case "multi-tap":
+                                handleMultiTap(intent, out);
+                                break;
+                            case "swipe":
+                                handleSwipe(intent, out);
+                                break;
+                            case "long_press":
+                            case "long-press":
+                                handleLongPress(intent, out);
+                                break;
+                            case "macro":
+                                handleMacro(intent, out);
+                                break;
+                            default:
+                                throw new TouchApiException("Unknown action: " + action);
+                        }
                     }
+                } catch (TouchApiException e) {
+                    out.name("success").value(false);
+                    out.name("error").value(e.getMessage());
                 } catch (Exception e) {
                     Logger.logStackTraceWithMessage(LOG_TAG, "Error executing action: " + action, e);
                     out.name("success").value(false);
-                    out.name("error").value(e.getMessage());
+                    out.name("error").value("Failed to execute touch gesture");
                 }
-                
                 out.endObject();
             }
         });
     }
 
-    /**
-     * Handle single tap at coordinates
-     */
-    private static void handleTap(Context context, Intent intent, JsonWriter out) throws Exception {
-        int x = intent.getIntExtra("x", -1);
-        int y = intent.getIntExtra("y", -1);
-        
-        if (x < 0 || y < 0) {
-            out.name("success").value(false);
-            out.name("error").value("Missing or invalid coordinates (x, y)");
-            return;
+    private static void writeStatus(JsonWriter out) throws Exception {
+        boolean enabled = touchService != null;
+        out.name("success").value(true);
+        out.name("action").value("status");
+        out.name("enabled").value(enabled);
+        if (!enabled) {
+            out.name("message").value(
+                "Enable Termux:API Touch Service in Android Settings > Accessibility");
         }
+    }
 
-        boolean success = performTap(x, y);
-        out.name("success").value(success);
+    private static void handleTap(Intent intent, JsonWriter out) throws Exception {
+        int x = requireCoordinate(intent, "x");
+        int y = requireCoordinate(intent, "y");
+        performGesture(createTap(x, y, 50));
+
+        out.name("success").value(true);
         out.name("action").value("tap");
         out.name("x").value(x);
         out.name("y").value(y);
     }
 
-    /**
-     * Handle multi-touch (tap multiple points simultaneously or sequentially)
-     * Input format: touches=[{"x":100,"y":200},{"x":300,"y":400}]
-     */
-    private static void handleMultiTap(Context context, Intent intent, JsonWriter out) throws Exception {
+    private static void handleMultiTap(Intent intent, JsonWriter out) throws Exception {
         String touchesJson = intent.getStringExtra("touches");
-        boolean simultaneous = intent.getBooleanExtra("simultaneous", false);
-        
-        if (touchesJson == null || touchesJson.isEmpty()) {
-            out.name("success").value(false);
-            out.name("error").value("Missing 'touches' parameter");
-            return;
+        if (touchesJson == null || touchesJson.trim().isEmpty()) {
+            throw new TouchApiException("Missing 'touches' parameter");
         }
 
         List<TouchPoint> touches = parseTouches(touchesJson);
-        if (touches.isEmpty()) {
-            out.name("success").value(false);
-            out.name("error").value("Invalid touches format");
-            return;
+        boolean simultaneous = intent.getBooleanExtra("simultaneous", false);
+        if (simultaneous) {
+            GestureDescription.Builder builder = new GestureDescription.Builder();
+            for (TouchPoint touch : touches) {
+                builder.addStroke(createStroke(touch.x, touch.y, touch.x, touch.y, 50));
+            }
+            performGesture(builder.build());
+        } else {
+            for (TouchPoint touch : touches) {
+                performGesture(createTap(touch.x, touch.y, 50));
+            }
         }
 
-        boolean success = simultaneous ? 
-            performMultiTouchSimultaneous(touches) : 
-            performMultiTouchSequential(touches);
-            
-        out.name("success").value(success);
+        out.name("success").value(true);
         out.name("action").value("multi_tap");
         out.name("count").value(touches.size());
         out.name("simultaneous").value(simultaneous);
     }
 
-    /**
-     * Handle swipe/drag gesture
-     */
-    private static void handleSwipe(Context context, Intent intent, JsonWriter out) throws Exception {
-        int x1 = intent.getIntExtra("x1", -1);
-        int y1 = intent.getIntExtra("y1", -1);
-        int x2 = intent.getIntExtra("x2", -1);
-        int y2 = intent.getIntExtra("y2", -1);
-        long duration = intent.getLongExtra("duration", 500);
-        
-        if (x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0) {
-            out.name("success").value(false);
-            out.name("error").value("Missing or invalid coordinates (x1, y1, x2, y2)");
-            return;
-        }
+    private static void handleSwipe(Intent intent, JsonWriter out) throws Exception {
+        int x1 = requireCoordinate(intent, "x1");
+        int y1 = requireCoordinate(intent, "y1");
+        int x2 = requireCoordinate(intent, "x2");
+        int y2 = requireCoordinate(intent, "y2");
+        long duration = requireDuration(intent.getLongExtra("duration", DEFAULT_SWIPE_DURATION));
 
-        boolean success = performSwipe(x1, y1, x2, y2, duration);
-        out.name("success").value(success);
+        performGesture(createGesture(x1, y1, x2, y2, duration));
+        out.name("success").value(true);
         out.name("action").value("swipe");
         out.name("from_x").value(x1);
         out.name("from_y").value(y1);
@@ -167,316 +153,197 @@ public class TouchAPI {
         out.name("duration").value(duration);
     }
 
-    /**
-     * Handle long press
-     */
-    private static void handleLongPress(Context context, Intent intent, JsonWriter out) throws Exception {
-        int x = intent.getIntExtra("x", -1);
-        int y = intent.getIntExtra("y", -1);
-        long duration = intent.getLongExtra("duration", 1000);
-        
-        if (x < 0 || y < 0) {
-            out.name("success").value(false);
-            out.name("error").value("Missing or invalid coordinates (x, y)");
-            return;
-        }
+    private static void handleLongPress(Intent intent, JsonWriter out) throws Exception {
+        int x = requireCoordinate(intent, "x");
+        int y = requireCoordinate(intent, "y");
+        long duration = requireDuration(intent.getLongExtra("duration", DEFAULT_LONG_PRESS_DURATION));
 
-        boolean success = performLongPress(x, y, duration);
-        out.name("success").value(success);
+        performGesture(createTap(x, y, duration));
+        out.name("success").value(true);
         out.name("action").value("long_press");
         out.name("x").value(x);
         out.name("y").value(y);
         out.name("duration").value(duration);
     }
 
-    /**
-     * Handle macro - sequence of touches with delays
-     * Example:
-     * macro=[
-     *   {"action":"tap","x":100,"y":200},
-     *   {"action":"wait","delay":500},
-     *   {"action":"tap","x":300,"y":400},
-     *   {"action":"swipe","x1":100,"y1":200,"x2":300,"y2":400,"duration":500}
-     * ]
-     */
-    private static void handleMacro(Context context, Intent intent, JsonWriter out) throws Exception {
+    private static void handleMacro(Intent intent, JsonWriter out) throws Exception {
         String macroJson = intent.getStringExtra("macro");
-        String name = intent.getStringExtra("name");
-        
-        if (macroJson == null || macroJson.isEmpty()) {
-            out.name("success").value(false);
-            out.name("error").value("Missing 'macro' parameter");
-            return;
+        if (macroJson == null || macroJson.trim().isEmpty()) {
+            throw new TouchApiException("Missing 'macro' parameter");
         }
 
         List<MacroAction> actions = parseMacro(macroJson);
-        if (actions.isEmpty()) {
-            out.name("success").value(false);
-            out.name("error").value("Invalid macro format");
-            return;
+        for (MacroAction action : actions) {
+            switch (action.action) {
+                case "wait":
+                    try {
+                        Thread.sleep(action.delay);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new TouchApiException("Touch macro was interrupted");
+                    }
+                    break;
+                case "tap":
+                    performGesture(createTap(action.x, action.y, 50));
+                    break;
+                case "long_press":
+                case "long-press":
+                    performGesture(createTap(action.x, action.y, action.duration));
+                    break;
+                case "swipe":
+                    performGesture(createGesture(
+                        action.x1, action.y1, action.x2, action.y2, action.duration));
+                    break;
+                default:
+                    throw new TouchApiException("Unknown macro action: " + action.action);
+            }
         }
 
-        boolean success = performMacro(actions);
-        out.name("success").value(success);
+        out.name("success").value(true);
         out.name("action").value("macro");
-        if (name != null && !name.isEmpty()) {
-            out.name("name").value(name);
-        }
+        String name = intent.getStringExtra("name");
+        if (name != null && !name.isEmpty()) out.name("name").value(name);
         out.name("steps").value(actions.size());
     }
 
-    // ==================== Core Touch Methods ====================
-
-    private static boolean performTap(int x, int y) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                return performTapAccessibility(x, y);
-            } else {
-                Logger.logWarn(LOG_TAG, "Tap requires Android N+");
-                return false;
-            }
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error performing tap", e);
-            return false;
-        }
-    }
-
-    @TargetApi(Build.VERSION_CODES.N)
-    private static boolean performTapAccessibility(int x, int y) {
-        Path path = new Path();
-        path.moveTo(x, y);
-        path.lineTo(x + 1, y + 1);
-        
+    private static GestureDescription createTap(int x, int y, long duration) {
         GestureDescription.Builder builder = new GestureDescription.Builder();
-        GestureDescription.StrokeDescription strokeDesc = 
-            new GestureDescription.StrokeDescription(path, 0, 50);
-        
-        builder.addStroke(strokeDesc);
-        GestureDescription gesture = builder.build();
-        
-        return dispatchGesture(gesture);
+        builder.addStroke(createStroke(x, y, x, y, duration));
+        return builder.build();
     }
 
-    private static boolean performMultiTouchSimultaneous(List<TouchPoint> touches) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            Logger.logWarn(LOG_TAG, "Multi-touch requires Android N+");
-            return false;
-        }
+    private static GestureDescription createGesture(int x1, int y1, int x2, int y2, long duration) {
+        GestureDescription.Builder builder = new GestureDescription.Builder();
+        builder.addStroke(createStroke(x1, y1, x2, y2, duration));
+        return builder.build();
+    }
 
+    private static GestureDescription.StrokeDescription createStroke(
+        int x1, int y1, int x2, int y2, long duration) {
+        Path path = new Path();
+        path.moveTo(x1, y1);
+        if (x1 != x2 || y1 != y2) path.lineTo(x2, y2);
+        return new GestureDescription.StrokeDescription(path, 0, duration);
+    }
+
+    private static void performGesture(GestureDescription gesture) throws TouchApiException {
+        TouchAccessibilityService service = requireTouchService();
+        if (!service.dispatchGestureAndWait(gesture)) {
+            throw new TouchApiException("Android cancelled or rejected the touch gesture");
+        }
+    }
+
+    private static TouchAccessibilityService requireTouchService() throws TouchApiException {
+        TouchAccessibilityService service = touchService;
+        if (service == null) {
+            throw new TouchApiException(
+                "Touch service is disabled. Enable Termux:API Touch Service in Android Settings > Accessibility");
+        }
+        return service;
+    }
+
+    private static int requireCoordinate(Intent intent, String name) throws TouchApiException {
+        if (!intent.hasExtra(name)) throw new TouchApiException("Missing '" + name + "' parameter");
+        int value = intent.getIntExtra(name, -1);
+        if (value < 0) throw new TouchApiException("'" + name + "' must be zero or greater");
+        return value;
+    }
+
+    private static int requireCoordinate(JSONObject object, String name) throws TouchApiException {
+        if (!object.has(name)) throw new TouchApiException("Missing '" + name + "' parameter");
+        int value;
         try {
-            GestureDescription.Builder builder = new GestureDescription.Builder();
-            
-            for (TouchPoint touch : touches) {
-                Path path = new Path();
-                path.moveTo(touch.x, touch.y);
-                path.lineTo(touch.x + 1, touch.y + 1);
-                
-                GestureDescription.StrokeDescription strokeDesc = 
-                    new GestureDescription.StrokeDescription(path, 0, 50);
-                builder.addStroke(strokeDesc);
+            value = object.getInt(name);
+        } catch (JSONException e) {
+            throw new TouchApiException("'" + name + "' must be an integer");
+        }
+        if (value < 0) throw new TouchApiException("'" + name + "' must be zero or greater");
+        return value;
+    }
+
+    private static long requireDuration(long duration) throws TouchApiException {
+        if (duration < 1 || duration > MAX_GESTURE_DURATION) {
+            throw new TouchApiException("'duration' must be between 1 and 60000 milliseconds");
+        }
+        return duration;
+    }
+
+    private static List<TouchPoint> parseTouches(String json) throws TouchApiException {
+        try {
+            JSONArray array = new JSONArray(json);
+            if (array.length() == 0 || array.length() > MAX_STROKES) {
+                throw new TouchApiException("'touches' must contain between 1 and 10 points");
             }
-            
-            return dispatchGesture(builder.build());
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error performing multi-touch", e);
-            return false;
-        }
-    }
-
-    private static boolean performMultiTouchSequential(List<TouchPoint> touches) {
-        for (TouchPoint touch : touches) {
-            if (!performTap(touch.x, touch.y)) {
-                return false;
+            List<TouchPoint> touches = new ArrayList<>(array.length());
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject object = array.getJSONObject(i);
+                touches.add(new TouchPoint(
+                    requireCoordinate(object, "x"), requireCoordinate(object, "y")));
             }
-            try {
-                Thread.sleep(50); // Small delay between taps
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean performSwipe(int x1, int y1, int x2, int y2, long duration) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            Logger.logWarn(LOG_TAG, "Swipe requires Android N+");
-            return false;
-        }
-
-        try {
-            Path path = new Path();
-            path.moveTo(x1, y1);
-            path.lineTo(x2, y2);
-            
-            GestureDescription.Builder builder = new GestureDescription.Builder();
-            GestureDescription.StrokeDescription strokeDesc = 
-                new GestureDescription.StrokeDescription(path, 0, duration);
-            
-            builder.addStroke(strokeDesc);
-            return dispatchGesture(builder.build());
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error performing swipe", e);
-            return false;
+            return touches;
+        } catch (JSONException e) {
+            throw new TouchApiException("'touches' must be a JSON array of {\"x\",\"y\"} objects");
         }
     }
 
-    private static boolean performLongPress(int x, int y, long duration) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            Logger.logWarn(LOG_TAG, "Long press requires Android N+");
-            return false;
-        }
-
+    private static List<MacroAction> parseMacro(String json) throws TouchApiException {
         try {
-            Path path = new Path();
-            path.moveTo(x, y);
-            path.lineTo(x + 1, y + 1);
-            
-            GestureDescription.Builder builder = new GestureDescription.Builder();
-            GestureDescription.StrokeDescription strokeDesc = 
-                new GestureDescription.StrokeDescription(path, 0, duration);
-            
-            builder.addStroke(strokeDesc);
-            return dispatchGesture(builder.build());
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error performing long press", e);
-            return false;
-        }
-    }
+            JSONArray array = new JSONArray(json);
+            if (array.length() == 0) throw new TouchApiException("'macro' must not be empty");
+            List<MacroAction> actions = new ArrayList<>(array.length());
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject object = array.getJSONObject(i);
+                String action = object.optString("action", "").trim().toLowerCase(Locale.ROOT);
+                if (action.isEmpty()) throw new TouchApiException("Missing macro 'action' at index " + i);
 
-    private static boolean performMacro(List<MacroAction> actions) {
-        try {
-            for (MacroAction action : actions) {
-                switch (action.action.toLowerCase()) {
+                MacroAction macroAction = new MacroAction(action);
+                switch (action) {
                     case "wait":
-                        Thread.sleep(action.delay);
+                        macroAction.delay = requireNonNegativeDelay(object);
                         break;
                     case "tap":
-                        if (!performTap(action.x, action.y)) return false;
+                        macroAction.x = requireCoordinate(object, "x");
+                        macroAction.y = requireCoordinate(object, "y");
                         break;
                     case "long_press":
-                        if (!performLongPress(action.x, action.y, action.duration)) return false;
+                    case "long-press":
+                        macroAction.x = requireCoordinate(object, "x");
+                        macroAction.y = requireCoordinate(object, "y");
+                        macroAction.duration = requireDuration(
+                            object.optLong("duration", DEFAULT_LONG_PRESS_DURATION));
                         break;
                     case "swipe":
-                        if (!performSwipe(action.x1, action.y1, action.x2, action.y2, action.duration)) 
-                            return false;
+                        macroAction.x1 = requireCoordinate(object, "x1");
+                        macroAction.y1 = requireCoordinate(object, "y1");
+                        macroAction.x2 = requireCoordinate(object, "x2");
+                        macroAction.y2 = requireCoordinate(object, "y2");
+                        macroAction.duration = requireDuration(
+                            object.optLong("duration", DEFAULT_SWIPE_DURATION));
                         break;
+                    default:
+                        throw new TouchApiException("Unknown macro action: " + action);
                 }
+                actions.add(macroAction);
             }
-            return true;
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error performing macro", e);
-            return false;
+            return actions;
+        } catch (JSONException e) {
+            throw new TouchApiException("'macro' must be a valid JSON array of action objects");
         }
     }
 
-    @TargetApi(Build.VERSION_CODES.N)
-    private static boolean dispatchGesture(GestureDescription gesture) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            return false;
+    private static long requireNonNegativeDelay(JSONObject object) throws TouchApiException {
+        if (!object.has("delay")) throw new TouchApiException("Missing 'delay' parameter");
+        long delay = object.optLong("delay", -1);
+        if (delay < 0 || delay > MAX_GESTURE_DURATION) {
+            throw new TouchApiException("'delay' must be between 0 and 60000 milliseconds");
         }
-
-        try {
-            // This would require AccessibilityService, but for now we use a mock approach
-            // In production, you'd need to bind to accessibility service
-            Logger.logDebug(LOG_TAG, "Dispatching gesture");
-            return true;
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error dispatching gesture", e);
-            return false;
-        }
+        return delay;
     }
-
-    // ==================== Helper Methods ====================
-
-    private static List<TouchPoint> parseTouches(String json) {
-        List<TouchPoint> touches = new ArrayList<>();
-        try {
-            // Simple JSON parsing for touch points
-            // Format: [{"x":100,"y":200},{"x":300,"y":400}]
-            json = json.replaceAll("[\\[\\]]", "");
-            String[] parts = json.split("\\}");
-            
-            for (String part : parts) {
-                if (part.trim().isEmpty()) continue;
-                
-                part = part.replaceAll("[\\{,]", "");
-                String[] pairs = part.split("\"");
-                
-                int x = -1, y = -1;
-                for (int i = 0; i < pairs.length; i++) {
-                    if (pairs[i].contains("x") && i + 2 < pairs.length) {
-                        x = Integer.parseInt(pairs[i + 2].replaceAll("[^0-9]", ""));
-                    }
-                    if (pairs[i].contains("y") && i + 2 < pairs.length) {
-                        y = Integer.parseInt(pairs[i + 2].replaceAll("[^0-9]", ""));
-                    }
-                }
-                
-                if (x >= 0 && y >= 0) {
-                    touches.add(new TouchPoint(x, y));
-                }
-            }
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error parsing touches", e);
-        }
-        return touches;
-    }
-
-    private static List<MacroAction> parseMacro(String json) {
-        List<MacroAction> actions = new ArrayList<>();
-        try {
-            // Simple JSON parsing for macro actions
-            json = json.replaceAll("[\\[\\]]", "");
-            String[] parts = json.split("\\}");
-            
-            for (String part : parts) {
-                if (part.trim().isEmpty()) continue;
-                
-                MacroAction action = new MacroAction();
-                
-                // Extract action type
-                if (part.contains("\"action\"")) {
-                    action.action = extractValue(part, "action");
-                }
-                
-                // Extract coordinates/delays
-                if (part.contains("\"x\"")) action.x = Integer.parseInt(extractValue(part, "x"));
-                if (part.contains("\"y\"")) action.y = Integer.parseInt(extractValue(part, "y"));
-                if (part.contains("\"x1\"")) action.x1 = Integer.parseInt(extractValue(part, "x1"));
-                if (part.contains("\"y1\"")) action.y1 = Integer.parseInt(extractValue(part, "y1"));
-                if (part.contains("\"x2\"")) action.x2 = Integer.parseInt(extractValue(part, "x2"));
-                if (part.contains("\"y2\"")) action.y2 = Integer.parseInt(extractValue(part, "y2"));
-                if (part.contains("\"delay\"")) action.delay = Long.parseLong(extractValue(part, "delay"));
-                if (part.contains("\"duration\"")) action.duration = Long.parseLong(extractValue(part, "duration"));
-                
-                if (!action.action.isEmpty()) {
-                    actions.add(action);
-                }
-            }
-        } catch (Exception e) {
-            Logger.logStackTraceWithMessage(LOG_TAG, "Error parsing macro", e);
-        }
-        return actions;
-    }
-
-    private static String extractValue(String json, String key) {
-        int start = json.indexOf("\"" + key + "\"");
-        if (start == -1) return "";
-        
-        start = json.indexOf(":", start);
-        int end = json.indexOf(",", start);
-        if (end == -1) end = json.indexOf("}", start);
-        
-        String value = json.substring(start + 1, end).trim();
-        return value.replaceAll("[\"\\s]", "");
-    }
-
-    // ==================== Helper Classes ====================
 
     private static class TouchPoint {
-        int x, y;
-        
+        final int x;
+        final int y;
+
         TouchPoint(int x, int y) {
             this.x = x;
             this.y = y;
@@ -484,28 +351,100 @@ public class TouchAPI {
     }
 
     private static class MacroAction {
-        String action = "";
-        int x = -1, y = -1;
-        int x1 = -1, y1 = -1;
-        int x2 = -1, y2 = -1;
-        long delay = 0;
-        long duration = 500;
+        final String action;
+        int x;
+        int y;
+        int x1;
+        int y1;
+        int x2;
+        int y2;
+        long delay;
+        long duration;
+
+        MacroAction(String action) {
+            this.action = action;
+        }
     }
 
-    /**
-     * Mock AccessibilityService for future implementation
-     */
-    @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
+    private static class TouchApiException extends Exception {
+        TouchApiException(String message) {
+            super(message);
+        }
+    }
+
+    /** Accessibility service that owns the privileged gesture dispatch API. */
     public static class TouchAccessibilityService extends AccessibilityService {
-        
+        private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
         @Override
-        public void onAccessibilityEvent(android.view.accessibility.AccessibilityEvent event) {
-            // Not needed for now
+        protected void onServiceConnected() {
+            super.onServiceConnected();
+            touchService = this;
+            Logger.logInfo(LOG_TAG, "Touch accessibility service connected");
+        }
+
+        @Override
+        public boolean onUnbind(Intent intent) {
+            clearServiceReference();
+            return super.onUnbind(intent);
+        }
+
+        @Override
+        public void onDestroy() {
+            clearServiceReference();
+            super.onDestroy();
+        }
+
+        private void clearServiceReference() {
+            if (touchService == this) touchService = null;
+        }
+
+        boolean dispatchGestureAndWait(GestureDescription gesture) {
+            CountDownLatch completed = new CountDownLatch(1);
+            AtomicBoolean success = new AtomicBoolean(false);
+            long timeout = getGestureDuration(gesture) + CALLBACK_TIMEOUT_BUFFER;
+
+            mainHandler.post(() -> {
+                boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+                    @Override
+                    public void onCompleted(GestureDescription gestureDescription) {
+                        success.set(true);
+                        completed.countDown();
+                    }
+
+                    @Override
+                    public void onCancelled(GestureDescription gestureDescription) {
+                        completed.countDown();
+                    }
+                }, null);
+                if (!accepted) completed.countDown();
+            });
+
+            try {
+                return completed.await(timeout, TimeUnit.MILLISECONDS) && success.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        private long getGestureDuration(GestureDescription gesture) {
+            long duration = 0;
+            for (int i = 0; i < gesture.getStrokeCount(); i++) {
+                GestureDescription.StrokeDescription stroke = gesture.getStroke(i);
+                duration = Math.max(duration, stroke.getStartTime() + stroke.getDuration());
+            }
+            return duration;
+        }
+
+        @Override
+        public void onAccessibilityEvent(AccessibilityEvent event) {
+            // Event contents are intentionally ignored; this service only dispatches gestures.
         }
 
         @Override
         public void onInterrupt() {
-            // Not needed for now
+            // No event processing to interrupt.
         }
     }
 }

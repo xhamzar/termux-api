@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:sharedUserId="${TERMUX_PACKAGE_NAME}">
-
-
-<uses-permission android:name="android.permission.INJECT_EVENTS" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -212,6 +209,22 @@
 
         <service android:name=".apis.UsbAPI$UsbService"
             android:exported="false" />
+
+        <service
+            android:name=".apis.TouchAPI$TouchAccessibilityService"
+            android:description="@string/touch_accessibility_service_description"
+            android:enabled="true"
+            android:exported="true"
+            android:label="@string/touch_accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/touch_accessibility_service" />
+        </service>
 
     </application>
 

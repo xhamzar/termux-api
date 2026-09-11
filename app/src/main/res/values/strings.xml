@@ -8,6 +8,8 @@
     ]>
 
 <resources>
+    <string name="touch_accessibility_service_label">Termux:API Touch Service</string>
+    <string name="touch_accessibility_service_description">Allows Termux:API commands to perform taps, swipes, long presses, and touch macros.</string>
     <string name="app_name">&TERMUX_API_APP_NAME;</string>
     <string name="share_file_chooser_title">Share with</string>
     <string name="grant_permission">Grant permission</string>

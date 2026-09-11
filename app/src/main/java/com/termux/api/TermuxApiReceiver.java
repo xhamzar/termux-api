@@ -39,6 +39,7 @@ import com.termux.api.apis.StorageGetAPI;
 import com.termux.api.apis.TelephonyAPI;
 import com.termux.api.apis.TextToSpeechAPI;
 import com.termux.api.apis.ToastAPI;
+import com.termux.api.apis.TouchAPI;
 import com.termux.api.apis.TorchAPI;
 import com.termux.api.apis.UsbAPI;
 import com.termux.api.apis.VibrateAPI;
@@ -51,7 +52,6 @@ import com.termux.shared.data.IntentUtils;
 import com.termux.shared.logger.Logger;
 import com.termux.shared.termux.TermuxConstants;
 import com.termux.shared.termux.plugins.TermuxPluginUtils;
-import com.termux.api.apis.TouchAPI;
 
 
 public class TermuxApiReceiver extends BroadcastReceiver {
@@ -104,9 +104,8 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                 }
                 BrightnessAPI.onReceive(this, context, intent);
                 break;
-            // Dalam switch statement, tambahkan:
-               case "Touch":
-                    TouchAPI.onReceive(this, context, intent);
+            case "Touch":
+                TouchAPI.onReceive(this, context, intent);
                 break;
             case "CameraInfo":
                 CameraInfoAPI.onReceive(this, context, intent);
