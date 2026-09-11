@@ -29,6 +29,7 @@ import com.termux.api.apis.MicRecorderAPI;
 import com.termux.api.apis.NfcAPI;
 import com.termux.api.apis.NotificationAPI;
 import com.termux.api.apis.NotificationListAPI;
+import com.termux.api.apis.OverlayAPI;
 import com.termux.api.apis.SAFAPI;
 import com.termux.api.apis.SensorAPI;
 import com.termux.api.apis.ShareAPI;
@@ -194,6 +195,9 @@ public class TermuxApiReceiver extends BroadcastReceiver {
                 break;
             case "NotificationReply":
                 NotificationAPI.onReceiveReplyToNotification(this, context, intent);
+                break;
+            case "Overlay":
+                OverlayAPI.onReceive(this, context, intent);
                 break;
             case "SAF":
                 SAFAPI.onReceive(this, context, intent);

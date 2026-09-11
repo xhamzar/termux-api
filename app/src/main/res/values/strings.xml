@@ -10,6 +10,19 @@
 <resources>
     <string name="touch_accessibility_service_label">Termux:API Touch Service</string>
     <string name="touch_accessibility_service_description">Allows Termux:API commands to perform taps, swipes, long presses, and touch macros.</string>
+    <string name="overlay_service_description">Displays a user-controlled floating Termux:API status panel.</string>
+    <string name="overlay_default_text">Termux:API overlay</string>
+    <string name="overlay_content_description">Movable Termux:API floating overlay</string>
+    <string name="overlay_drag_hint">Tap or drag to move</string>
+    <plurals name="overlay_tap_status">
+        <item quantity="one">Tapped %1$d time</item>
+        <item quantity="other">Tapped %1$d times</item>
+    </plurals>
+    <string name="overlay_notification_channel_name">Floating overlay</string>
+    <string name="overlay_notification_channel_description">Shows when the Termux:API floating overlay is running.</string>
+    <string name="overlay_notification_title">Termux:API overlay is running</string>
+    <string name="overlay_notification_text">Use a Termux overlay command or tap Stop to close it.</string>
+    <string name="overlay_notification_stop">Stop</string>
     <string name="app_name">&TERMUX_API_APP_NAME;</string>
     <string name="share_file_chooser_title">Share with</string>
     <string name="grant_permission">Grant permission</string>

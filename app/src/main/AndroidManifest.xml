@@ -34,6 +34,8 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.DUMP" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
 
     <!-- This permission is not used, but a permission is needed on the sharedfiles contentprovider,
@@ -209,6 +211,17 @@
 
         <service android:name=".apis.UsbAPI$UsbService"
             android:exported="false" />
+
+        <service
+            android:name=".apis.OverlayService"
+            android:description="@string/overlay_service_description"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-controlled floating overlay for Termux commands" />
+        </service>
 
         <service
             android:name=".apis.TouchAPI$TouchAccessibilityService"
